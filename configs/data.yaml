@@ -1,0 +1,6 @@
+seed: 0
+n_samples: 1000000
+seq_length: 32
+modulo: 2
+batch_size: 128
+num_workers: 4

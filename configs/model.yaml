@@ -1,0 +1,5 @@
+depth: 8
+dim: 256
+attn_heads: 4
+max_seq_len: 32
+vocab_size: 2
