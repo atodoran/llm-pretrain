@@ -9,7 +9,20 @@ from model import get_model
 from data import get_loaders
 from config import TrainConfig, ModelConfig, DataConfig, load_yml
 
-def train(model, train_loader, val_loader, train_config: TrainConfig):
+def save_checkpoint(model, optimizer, epoch, path):
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, path)
+
+def load_checkpoint(model, optimizer, path, device):
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    return checkpoint['epoch']
+
+def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=None, checkpoint_path=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     optimizer = optim.Adam(model.parameters(), lr=train_config.learning_rate)
@@ -19,9 +32,16 @@ def train(model, train_loader, val_loader, train_config: TrainConfig):
     train_losses, train_accs = [], []
     val_losses, val_accs = [], []
 
+    start_epoch = 0
+    # Resume from checkpoint if available
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+        start_epoch = load_checkpoint(model, optimizer, checkpoint_path, device)
+        print(f"Resumed from epoch {start_epoch}")
+
     print("Starting training...")
     model.train()
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         epoch_loss, epoch_acc = 0.0, 0.0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
             inputs, targets = batch
@@ -47,6 +67,16 @@ def train(model, train_loader, val_loader, train_config: TrainConfig):
         print(f"Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, "
               f"Val Loss: {val_losses[-1]:.4f}, Val Acc: {val_accs[-1]:.4f}")
 
+        # Save checkpoint after each epoch
+        if checkpoint_path:
+            save_checkpoint(model, optimizer, epoch+1, checkpoint_path)
+
+    # Save final model
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torch.save(model.state_dict(), save_path)
+        print(f"Model saved to {save_path}")
+
 def main():
     print("Loading configs...")
     train_config_path = os.path.join('configs', 'train.yaml')
@@ -69,7 +99,18 @@ def main():
     model = get_model(model_config)
     model = model.cuda()
 
-    train(model=model, train_loader=loader_train, val_loader=loader_val, train_config=train_config)
+    # Checkpoint and model save paths
+    checkpoint_path = os.path.join("models", "checkpoint.pth")
+    save_path = os.path.join("models", getattr(train_config, "save_name", "final_model.pth"))
+
+    train(
+        model=model,
+        train_loader=loader_train,
+        val_loader=loader_val,
+        train_config=train_config,
+        save_path=save_path,
+        checkpoint_path=checkpoint_path
+    )
 
 if __name__ == "__main__":
     main()
