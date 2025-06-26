@@ -5,15 +5,15 @@ from torch.utils.data import Dataset, DataLoader
 class ModularOpDataset(Dataset):
     def __init__(self, n_samples, seq_length, modulo=2):
         self.X = np.random.randint(0, modulo, size=(n_samples, seq_length))
-        self.y = np.sum(self.X, axis=1) % modulo
+        self.Y = np.cumsum(self.X, axis=1) % modulo
         self.n_samples = n_samples
-        self.X, self.y = self.X.astype(int), self.y.astype(int)
+        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+        return self.X[idx], self.Y[idx]
 
 
 def collate_fn(batch):

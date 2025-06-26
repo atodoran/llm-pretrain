@@ -46,9 +46,9 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
             inputs, targets = batch
             inputs = inputs.to(device)
-            targets = targets.to(device)
+            targets = targets.to(device).long()
             optimizer.zero_grad()
-            outputs = model(inputs)
+            outputs = model(inputs).permute(0, 2, 1)
             loss = loss_fn(outputs, targets)
             loss.backward()
             optimizer.step()

@@ -1,6 +1,4 @@
-torch>=2.0.0
 numpy>=1.21.0
 tqdm>=4.60.0
 pyyaml>=5.3.1
 dataclasses-json>=0.5.7
-x_transformers>=4.20.0

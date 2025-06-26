@@ -1,5 +1,5 @@
-depth: 8
-dim: 256
-attn_heads: 4
+depth: 2
+dim: 64
+attn_heads: 2
 max_seq_len: 32
 vocab_size: 2
