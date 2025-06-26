@@ -29,12 +29,12 @@ def collate_fn(batch):
 
 def get_loaders(data_config):
     train_set = ModularOpDataset(
-        n_samples=data_config.n_samples,
+        n_samples=data_config.n_train_samples,
         seq_length=data_config.seq_length,
         modulo=data_config.modulo
     )
     val_set = ModularOpDataset(
-        n_samples=data_config.n_samples,
+        n_samples=data_config.n_val_samples,
         seq_length=data_config.seq_length,
         modulo=data_config.modulo
     )

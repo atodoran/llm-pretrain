@@ -35,7 +35,8 @@ class ModelConfig(Config):
 @dataclass
 class DataConfig(Config):
     seed: int = 0
-    n_samples: int = 1000000
+    n_train_samples: int = 1000000
+    n_val_samples: int = 10000
     seq_length: int = 32
     modulo: int = 2
     batch_size: int = 128

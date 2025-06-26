@@ -1,5 +1,6 @@
 seed: 0
-n_samples: 1000000
+n_train_samples: 10000
+n_val_samples: 100
 seq_length: 32
 modulo: 2
 batch_size: 128

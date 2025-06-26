@@ -4,6 +4,7 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 from tqdm import tqdm
+import argparse
 
 from model import get_model
 from data import get_loaders
@@ -32,19 +33,22 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
     train_losses, train_accs = [], []
     val_losses, val_accs = [], []
 
+    if checkpoint_path:
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    
     start_epoch = 0
-    # Resume from checkpoint if available
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Resuming from checkpoint: {checkpoint_path}")
         start_epoch = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
 
     print("Starting training...")
-    model.train()
     for epoch in range(start_epoch, epochs):
+
+        # Training loop
+        model.train()
         epoch_loss, epoch_acc = 0.0, 0.0
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
-            inputs, targets = batch
+        for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
             inputs = inputs.to(device)
             targets = targets.to(device).long()
             optimizer.zero_grad()
@@ -60,12 +64,26 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         train_losses.append(epoch_loss / len(train_loader))
         train_accs.append(epoch_acc / len(train_loader))
 
-        val_loss, val_acc = val_loader(model, val_loader, loss_fn)
+        # Validation loop
+        model.eval()
+        val_loss, val_acc = 0.0, 0.0
+        with torch.no_grad():
+            for val_inputs, val_targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}"):
+                val_inputs = val_inputs.to(device)
+                val_targets = val_targets.to(device).long()
+                val_outputs = model(val_inputs).permute(0, 2, 1)
+                loss = loss_fn(val_outputs, val_targets)
+                val_loss += loss.item()
+                _, val_predicted = torch.max(val_outputs, 1)
+                val_acc += (val_predicted == val_targets).float().mean().item()
+        val_loss /= len(val_loader)
+        val_acc /= len(val_loader)
+
         val_losses.append(val_loss)
         val_accs.append(val_acc)
 
         print(f"Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, "
-              f"Val Loss: {val_losses[-1]:.4f}, Val Acc: {val_accs[-1]:.4f}")
+              f"Val Loss: {val_losses[-1]:.4f}, Val Acc: {val_accs[-1]:.4f}\n")
 
         # Save checkpoint after each epoch
         if checkpoint_path:
@@ -78,6 +96,10 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         print(f"Model saved to {save_path}")
 
 def main():
+    parser = argparse.ArgumentParser(description="Train the model.")
+    parser.add_argument('--save_path', type=str, default=None, help='Path to save the final model.')
+    args = parser.parse_args()
+
     print("Loading configs...")
     train_config_path = os.path.join('configs', 'train.yaml')
     data_config_path = os.path.join('configs', 'data.yaml')
@@ -100,8 +122,8 @@ def main():
     model = model.cuda()
 
     # Checkpoint and model save paths
-    checkpoint_path = os.path.join("models", "checkpoint.pth")
-    save_path = os.path.join("models", getattr(train_config, "save_name", "final_model.pth"))
+    checkpoint_path = os.path.join("logs", "checkpoint.pth")
+    save_path = os.path.join("models", args.save_path) if args.save_path else None
 
     train(
         model=model,
