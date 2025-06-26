@@ -100,7 +100,7 @@ def get_loaders(data_config):
     task = data_config.task
 
     Dataset = {
-        "modular_op": ModularAddition,
+        "modular_addition": ModularAddition,
         "in_context_recall": InContextRecall,
         "bitwise_xor": BitwiseXOR,
         "permutation_composition": PermutationComposition

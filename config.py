@@ -43,7 +43,7 @@ class DataConfig(Config):
     num_workers: int = 4
 
     # Task-specific parameters
-    modulo:     int = field(default=2,  metadata={"task": ["modular_add"]})
+    modulo:     int = field(default=2,  metadata={"task": ["modular_addition"]})
     num_keys:   int = field(default=16, metadata={"task": ["in_context_recall"]})
     num_values: int = field(default=16, metadata={"task": ["in_context_recall"]})
     max_num:    int = field(default=32, metadata={"task": ["bitwise_xor"]})
