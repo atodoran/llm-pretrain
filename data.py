@@ -13,17 +13,18 @@ class ModularOpDataset(Dataset):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return self.X[idx], self.Y[idx]
+        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
 
 
 def collate_fn(batch):
-    X, y = zip(*batch)
-    lens = [len(x) for x in X]
+    X, Y = zip(*batch)
+    lens = [x.size(0) for x in X]
     max_len = max(lens)
-    X = [np.pad(x, (0, max_len - len(x))) for x in X]
-    X = torch.tensor(np.stack(X), dtype=torch.float32)
-    y = torch.tensor(np.array(y), dtype=torch.float32)
-    return X, y
+    X = [torch.nn.functional.pad(x, (0, max_len - x.size(0))) for x in X]
+    Y = [torch.nn.functional.pad(y, (0, max_len - y.size(0))) for y in Y]
+    X = torch.stack(X)
+    Y = torch.stack(Y)
+    return X, Y
 
 
 def get_loaders(data_config):
