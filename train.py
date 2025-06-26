@@ -5,6 +5,7 @@ import torch.optim as optim
 import torch.nn as nn
 from tqdm import tqdm
 import argparse
+import wandb
 
 from model import get_model
 from data import get_loaders
@@ -27,7 +28,7 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     optimizer = optim.Adam(model.parameters(), lr=train_config.learning_rate)
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     epochs = train_config.epochs
 
     train_losses, train_accs = [], []
@@ -42,12 +43,22 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         start_epoch = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
 
+    wandb.init(
+        project="llm-pretraining",
+        config={
+            "learning_rate": train_config.learning_rate,
+            "epochs": epochs,
+            "batch_size": train_loader.batch_size
+        }
+    )
+    wandb.watch(model, log="all")
+
     print("Starting training...")
     for epoch in range(start_epoch, epochs):
 
         # Training loop
         model.train()
-        epoch_loss, epoch_acc = 0.0, 0.0
+        train_loss, train_acc = 0.0, 0.0
         for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
             inputs = inputs.to(device)
             targets = targets.to(device).long()
@@ -57,12 +68,14 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
             loss.backward()
             optimizer.step()
 
-            epoch_loss += loss.item()
+            train_loss += loss.item()
             _, predicted = torch.max(outputs, 1)
-            epoch_acc += (predicted == targets).float().mean().item()
+            train_acc += (predicted == targets).float().mean().item()
 
-        train_losses.append(epoch_loss / len(train_loader))
-        train_accs.append(epoch_acc / len(train_loader))
+        train_loss /= len(train_loader)
+        train_acc /= len(train_loader)
+        train_losses.append(train_loss)
+        train_accs.append(train_acc)
 
         # Validation loop
         model.eval()
@@ -76,14 +89,23 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
                 val_loss += loss.item()
                 _, val_predicted = torch.max(val_outputs, 1)
                 val_acc += (val_predicted == val_targets).float().mean().item()
+        
         val_loss /= len(val_loader)
         val_acc /= len(val_loader)
-
         val_losses.append(val_loss)
         val_accs.append(val_acc)
 
-        print(f"Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, "
-              f"Val Loss: {val_losses[-1]:.4f}, Val Acc: {val_accs[-1]:.4f}\n")
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+              f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
+
+        # 3. Log metrics to wandb
+        wandb.log({
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "train_acc": train_acc,
+            "val_loss": val_loss,
+            "val_acc": val_acc,
+        })
 
         # Save checkpoint after each epoch
         if checkpoint_path:
@@ -94,6 +116,8 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         torch.save(model.state_dict(), save_path)
         print(f"Model saved to {save_path}")
+
+    wandb.finish()
 
 def main():
     parser = argparse.ArgumentParser(description="Train the model.")

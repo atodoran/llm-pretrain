@@ -1,5 +1,5 @@
 import yaml
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, field
 
 def load_yml(path):
     with open(path, 'r') as f:
@@ -35,9 +35,21 @@ class ModelConfig(Config):
 @dataclass
 class DataConfig(Config):
     seed: int = 0
+    task: str = 'modular_add'
     n_train_samples: int = 1000000
     n_val_samples: int = 10000
     seq_length: int = 32
-    modulo: int = 2
     batch_size: int = 128
     num_workers: int = 4
+
+    # Task-specific parameters
+    modulo:     int = field(default=2,  metadata={"task": ["modular_add"]})
+    num_keys:   int = field(default=16, metadata={"task": ["in_context_recall"]})
+    num_values: int = field(default=16, metadata={"task": ["in_context_recall"]})
+    max_num:    int = field(default=32, metadata={"task": ["bitwise_xor"]})
+
+    def task_kwargs(self, task: str = None) -> dict:
+        task = task or self.task
+        return {f.name: getattr(self, f.name)
+                for f in fields(self)
+                if task in f.metadata.get("task", [])}

@@ -1,7 +1,17 @@
 seed: 0
+task: permutation_composition
 n_train_samples: 10000
 n_val_samples: 100
 seq_length: 32
-modulo: 2
 batch_size: 128
 num_workers: 4
+
+# Modulo Addition
+modulo: 2
+# In-context Recall
+num_keys: 8
+num_values: 8
+# Bitwise XOR
+max_num: 32
+# Permutation composition
+n: 3

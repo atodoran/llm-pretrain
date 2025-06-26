@@ -2,4 +2,4 @@ depth: 2
 dim: 64
 attn_heads: 2
 max_seq_len: 32
-vocab_size: 2
+vocab_size: 32
