@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from sympy.combinatorics.permutations import Permutation
 import math
+import tqdm
 
 class ModularAddition(Dataset):
     def __init__(self, n_samples, seq_length, modulo=2):
@@ -70,7 +71,7 @@ class PermutationComposition(Dataset):
         table = np.array([[compose(i, j, n) for j in range(math.factorial(n))] for i in range(math.factorial(n))])
         self.X = np.random.randint(0, math.factorial(n), size=(n_samples, seq_length))
         self.Y = np.empty_like(self.X)
-        for i in range(n_samples):
+        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset"):
             curr = 0
             for j in range(seq_length):
                 curr = table[curr, self.X[i,j]]
