@@ -1,9 +1,9 @@
 import torch
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
+import os
+
 from data import get_loaders
 from config import DataConfig, load_yml
-import os
 
 def main():
     data_config_path = os.path.join('configs', 'data.yaml')
