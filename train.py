@@ -44,7 +44,7 @@ def train(
     accelerator = Accelerator()
     device = accelerator.device
 
-    optimizer = optim.Adam(model.parameters(), lr=train_config.learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=train_config.learning_rate)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     epochs = train_config.epochs
 
