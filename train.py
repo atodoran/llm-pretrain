@@ -16,8 +16,8 @@ def save_checkpoint(model, optimizer, epoch, path, wandb_id):
     torch.save(
         {
             "epoch": epoch,
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
             "wandb_id": wandb_id,
         },
         path,
@@ -25,8 +25,8 @@ def save_checkpoint(model, optimizer, epoch, path, wandb_id):
 
 def load_checkpoint(model, optimizer, path, device):
     ckpt = torch.load(path, map_location=device)
-    model.load_state_dict(ckpt["model_state"])
-    optimizer.load_state_dict(ckpt["optimizer_state"])
+    model.load_state_dict(ckpt["model_state_dict"])
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     epoch = ckpt["epoch"]
     wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
