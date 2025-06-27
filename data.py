@@ -26,14 +26,22 @@ class InContextRecall(Dataset):
 
         keys = np.random.randint(0, num_keys, size=(n_samples, seq_length // 2))
         values = np.array([value_of_key[key] for key in keys.flatten()]).reshape(n_samples, seq_length // 2)
+        values_masked = values.copy()
+        for i in range(n_samples):
+            seen_keys = set()
+            for j in range(seq_length // 2):
+                if keys[i, j] not in seen_keys:
+                    values_masked[i, j] = -100
+                    seen_keys.add(keys[i, j])
 
         kv_array = np.empty((n_samples, seq_length), dtype=keys.dtype)
         kv_array[:, 0::2] = keys
         kv_array[:, 1::2] = values
         self.X = kv_array[:, :-1].copy()
 
-        kv_array_masked = kv_array.copy()
-        kv_array_masked[:, 1::2] = -100
+        kv_array_masked = np.empty((n_samples, seq_length), dtype=keys.dtype)
+        kv_array_masked[:, 0::2] = -100
+        kv_array_masked[:, 1::2] = values_masked
         self.Y = kv_array_masked[:, 1:]
 
         self.X, self.Y = self.X.astype(int), self.Y.astype(int)
