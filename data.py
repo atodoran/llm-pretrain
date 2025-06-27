@@ -67,12 +67,13 @@ def compose(i: int, j: int, n: int = 5) -> int:
 
 class PermutationComposition(Dataset):
     def __init__(self, n_samples, seq_length, n=3):
+        table = np.array([[compose(i, j, n) for j in range(math.factorial(n))] for i in range(math.factorial(n))])
         self.X = np.random.randint(0, math.factorial(n), size=(n_samples, seq_length))
         self.Y = np.empty_like(self.X)
         for i in range(n_samples):
             curr = 0
             for j in range(seq_length):
-                curr = compose(curr, self.X[i,j], n)
+                curr = table[curr, self.X[i,j]]
                 self.Y[i,j] = curr
         
         self.X, self.Y = self.X.astype(int), self.Y.astype(int)
