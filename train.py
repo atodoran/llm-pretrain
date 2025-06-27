@@ -32,7 +32,15 @@ def load_checkpoint(model, optimizer, path, device):
     wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
 
-def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=None, checkpoint_path=None):
+def train(
+    model,
+    train_loader,
+    val_loader,
+    train_config: TrainConfig,
+    save_path=None,
+    checkpoint_path=None,
+    wandb_enabled=True,
+):
     accelerator = Accelerator()
     device = accelerator.device
 
@@ -58,18 +66,19 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         model, optimizer, train_loader, val_loader
     )
 
-    run = wandb.init(
-        project="llm-pretraining",
-        id=run_id,
-        resume="allow",
-        config={
-            "learning_rate": train_config.learning_rate,
-            "epochs": epochs,
-            "batch_size": train_loader.batch_size,
-        },
-    )
-    run_id = run.id
-    wandb.watch(model, log="all")
+    if wandb_enabled:
+        run = wandb.init(
+            project="llm-pretraining",
+            id=run_id,
+            resume="allow",
+            config={
+                "learning_rate": train_config.learning_rate,
+                "epochs": epochs,
+                "batch_size": train_loader.batch_size,
+            },
+        )
+        run_id = run.id
+        wandb.watch(model, log="all")
 
     print("Starting training...")
     for epoch in range(start_epoch, epochs):
@@ -116,24 +125,27 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
               f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
 
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": train_loss,
-            "train_acc": train_acc,
-            "val_loss": val_loss,
-            "val_acc": val_acc,
-        })
+        if wandb_enabled:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+            })
 
         if checkpoint_path:
             save_checkpoint(accelerator.unwrap_model(model), optimizer, epoch + 1, checkpoint_path, run_id)
         if save_path:
-            torch.save(accelerator.unwrap_model(model).state_dict(), save_path)  # ACCELERATOR
-
-    wandb.finish()
+            torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
+    
+    if wandb_enabled:
+        wandb.finish()
 
 def main():
     parser = argparse.ArgumentParser(description="Train the model.")
     parser.add_argument('--save_path', type=str, default=None, help='Path to save the final model.')
+    parser.add_argument('--no-wandb', action='store_true', help='If True, use Weights & Biases for logging.')
     args = parser.parse_args()
 
     print("Loading configs...")
@@ -166,7 +178,8 @@ def main():
         val_loader=loader_val,
         train_config=train_config,
         save_path=save_path,
-        checkpoint_path=checkpoint_path
+        checkpoint_path=checkpoint_path,
+        wandb_enabled=not args.no_wandb,
     )
 
 if __name__ == "__main__":
