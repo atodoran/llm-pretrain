@@ -6,6 +6,7 @@ import torch.nn as nn
 from tqdm import tqdm
 import argparse
 import wandb
+from accelerate import Accelerator
 
 from model import get_model
 from data import get_loaders
@@ -31,9 +32,9 @@ def load_checkpoint(model, optimizer, path, device):
     wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
 
-
 def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=None, checkpoint_path=None):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    accelerator = Accelerator()
+    device = accelerator.device
 
     optimizer = optim.Adam(model.parameters(), lr=train_config.learning_rate)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
@@ -52,6 +53,10 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         print(f"Resuming from checkpoint: {checkpoint_path}")
         start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
+
+    model, optimizer, train_loader, val_loader = accelerator.prepare(
+        model, optimizer, train_loader, val_loader
+    )
 
     run = wandb.init(
         project="llm-pretraining",
@@ -78,7 +83,7 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
             optimizer.zero_grad()
             outputs = model(inputs).permute(0, 2, 1)
             loss = loss_fn(outputs, targets)
-            loss.backward()
+            accelerator.backward(loss)
             optimizer.step()
 
             train_loss += loss.item()
@@ -120,9 +125,9 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         })
 
         if checkpoint_path:
-            save_checkpoint(model, optimizer, epoch + 1, checkpoint_path, run_id)
+            save_checkpoint(accelerator.unwrap_model(model), optimizer, epoch + 1, checkpoint_path, run_id)
         if save_path:
-            torch.save(model.state_dict(), save_path)
+            torch.save(accelerator.unwrap_model(model).state_dict(), save_path)  # ACCELERATOR
 
     wandb.finish()
 
@@ -150,7 +155,6 @@ def main():
     # Model
     print("Building the model...")
     model = get_model(model_config)
-    model = model.cuda()
 
     # Checkpoint and model save paths
     checkpoint_path = os.path.join("logs", "checkpoint.pth")
