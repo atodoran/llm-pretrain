@@ -11,18 +11,26 @@ from model import get_model
 from data import get_loaders
 from config import TrainConfig, ModelConfig, DataConfig, load_yml
 
-def save_checkpoint(model, optimizer, epoch, path):
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-    }, path)
+def save_checkpoint(model, optimizer, epoch, path, wandb_id):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "wandb_id": wandb_id,
+        },
+        path,
+    )
 
 def load_checkpoint(model, optimizer, path, device):
-    checkpoint = torch.load(path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    return checkpoint['epoch']
+    ckpt = torch.load(path, map_location=device)
+    model.load_state_dict(ckpt["model_state"])
+    optimizer.load_state_dict(ckpt["optimizer_state"])
+    epoch = ckpt["epoch"]
+    wandb_id = "run-20250626_213728-cnl79ccv" # ckpt.get("wandb_id")
+    return epoch, wandb_id
+
 
 def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=None, checkpoint_path=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -36,21 +44,26 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
 
     if checkpoint_path:
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
-    start_epoch = 0
+    start_epoch, run_id = 0, None
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Resuming from checkpoint: {checkpoint_path}")
-        start_epoch = load_checkpoint(model, optimizer, checkpoint_path, device)
+        start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
 
-    wandb.init(
+    run = wandb.init(
         project="llm-pretraining",
+        id=run_id,
+        resume="allow",
         config={
             "learning_rate": train_config.learning_rate,
             "epochs": epochs,
-            "batch_size": train_loader.batch_size
-        }
+            "batch_size": train_loader.batch_size,
+        },
     )
+    run_id = run.id
     wandb.watch(model, log="all")
 
     print("Starting training...")
@@ -98,7 +111,6 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
               f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
 
-        # 3. Log metrics to wandb
         wandb.log({
             "epoch": epoch + 1,
             "train_loss": train_loss,
@@ -107,15 +119,10 @@ def train(model, train_loader, val_loader, train_config: TrainConfig, save_path=
             "val_acc": val_acc,
         })
 
-        # Save checkpoint after each epoch
         if checkpoint_path:
-            save_checkpoint(model, optimizer, epoch+1, checkpoint_path)
-
-    # Save final model
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        torch.save(model.state_dict(), save_path)
-        print(f"Model saved to {save_path}")
+            save_checkpoint(model, optimizer, epoch + 1, checkpoint_path, run_id)
+        if save_path:
+            torch.save(model.state_dict(), save_path)
 
     wandb.finish()
 
