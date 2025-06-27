@@ -28,7 +28,7 @@ def load_checkpoint(model, optimizer, path, device):
     model.load_state_dict(ckpt["model_state"])
     optimizer.load_state_dict(ckpt["optimizer_state"])
     epoch = ckpt["epoch"]
-    wandb_id = "run-20250626_213728-cnl79ccv" # ckpt.get("wandb_id")
+    wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
 
 
