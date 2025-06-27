@@ -13,6 +13,7 @@ def main():
     torch.manual_seed(data_config.seed)
     torch.cuda.manual_seed(data_config.seed)
 
+    data_config.n_train_samples, data_config.n_val_samples = 5, 5
     data_config.batch_size = 5
     _, loader_val = get_loaders(data_config)
 
