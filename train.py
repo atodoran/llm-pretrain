@@ -97,7 +97,12 @@ def train(
 
             train_loss += loss.item()
             _, predicted = torch.max(outputs, 1)
-            train_acc += (predicted == targets).float().mean().item()
+
+            mask = (targets != -100)
+            if mask.any():
+                train_acc += ((predicted == targets) & mask).float().sum().item() / mask.float().sum().item()
+            else:
+                train_acc += 1.0
 
         train_loss /= len(train_loader)
         train_acc /= len(train_loader)
@@ -108,14 +113,20 @@ def train(
         model.eval()
         val_loss, val_acc = 0.0, 0.0
         with torch.no_grad():
-            for val_inputs, val_targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}"):
-                val_inputs = val_inputs.to(device)
-                val_targets = val_targets.to(device).long()
-                val_outputs = model(val_inputs).permute(0, 2, 1)
-                loss = loss_fn(val_outputs, val_targets)
+            for inputs, targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}"):
+                inputs = inputs.to(device)
+                targets = targets.to(device).long()
+                outputs = model(inputs).permute(0, 2, 1)
+                loss = loss_fn(outputs, targets)
+
                 val_loss += loss.item()
-                _, val_predicted = torch.max(val_outputs, 1)
-                val_acc += (val_predicted == val_targets).float().mean().item()
+                _, predicted = torch.max(outputs, 1)
+
+                mask = (targets != -100)
+                if mask.any():
+                    val_acc += ((predicted == targets) & mask).float().sum().item() / mask.float().sum().item()
+                else:
+                    val_acc += 1.0
         
         val_loss /= len(val_loader)
         val_acc /= len(val_loader)
