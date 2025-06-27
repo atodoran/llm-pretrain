@@ -1,5 +1,5 @@
-/__pycache__/
-/logs/
-/configs/
-/wandb/
-/models/
+__pycache__/
+logs/
+configs/
+wandb/
+models/
