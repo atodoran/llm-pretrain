@@ -62,11 +62,12 @@ def train(
         start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
 
+    # Prepare everything with accelerator for multi-GPU support
     model, optimizer, train_loader, val_loader = accelerator.prepare(
         model, optimizer, train_loader, val_loader
     )
 
-    if wandb_enabled:
+    if wandb_enabled and accelerator.is_main_process:
         run = wandb.init(
             project="llm-pretraining",
             id=run_id,
@@ -86,9 +87,9 @@ def train(
         # Training loop
         model.train()
         train_loss, train_acc = 0.0, 0.0
-        for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
-            inputs = inputs.to(device)
-            targets = targets.to(device).long()
+        num_train_batches = 0
+        for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", disable=not accelerator.is_local_main_process):
+            targets = targets.long()
             optimizer.zero_grad()
             outputs = model(inputs).permute(0, 2, 1)
             loss = loss_fn(outputs, targets)
@@ -103,19 +104,21 @@ def train(
                 train_acc += ((predicted == targets) & mask).float().sum().item() / mask.float().sum().item()
             else:
                 train_acc += 1.0
+            num_train_batches += 1
 
-        train_loss /= len(train_loader)
-        train_acc /= len(train_loader)
+        # Gather and average metrics across all processes
+        train_loss = accelerator.gather(torch.tensor(train_loss, device=device)).mean().item() / num_train_batches
+        train_acc = accelerator.gather(torch.tensor(train_acc, device=device)).mean().item() / num_train_batches
         train_losses.append(train_loss)
         train_accs.append(train_acc)
 
         # Validation loop
         model.eval()
         val_loss, val_acc = 0.0, 0.0
+        num_val_batches = 0
         with torch.no_grad():
-            for inputs, targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}"):
-                inputs = inputs.to(device)
-                targets = targets.to(device).long()
+            for inputs, targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}", disable=not accelerator.is_local_main_process):
+                targets = targets.long()
                 outputs = model(inputs).permute(0, 2, 1)
                 loss = loss_fn(outputs, targets)
 
@@ -127,30 +130,32 @@ def train(
                     val_acc += ((predicted == targets) & mask).float().sum().item() / mask.float().sum().item()
                 else:
                     val_acc += 1.0
+                num_val_batches += 1
         
-        val_loss /= len(val_loader)
-        val_acc /= len(val_loader)
+        val_loss = accelerator.gather(torch.tensor(val_loss, device=device)).mean().item() / num_val_batches
+        val_acc = accelerator.gather(torch.tensor(val_acc, device=device)).mean().item() / num_val_batches
         val_losses.append(val_loss)
         val_accs.append(val_acc)
 
-        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-              f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
+        if accelerator.is_main_process:
+            print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+                  f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
 
-        if wandb_enabled:
-            wandb.log({
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_acc": train_acc,
-                "val_loss": val_loss,
-                "val_acc": val_acc,
-            })
+            if wandb_enabled:
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "val_loss": val_loss,
+                    "val_acc": val_acc,
+                })
 
-        if checkpoint_path:
-            save_checkpoint(accelerator.unwrap_model(model), optimizer, epoch + 1, checkpoint_path, run_id)
-        if save_path:
-            torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
+            if checkpoint_path:
+                save_checkpoint(accelerator.unwrap_model(model), optimizer, epoch + 1, checkpoint_path, run_id)
+            if save_path:
+                torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
     
-    if wandb_enabled:
+    if wandb_enabled and accelerator.is_main_process:
         wandb.finish()
 
 def main():
