@@ -72,6 +72,36 @@ class BitwiseXOR(Dataset):
         return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
 
 
+class AdditionWithCarry(Dataset):
+    def __init__(self, n_samples, seq_length):
+        assert (seq_length - 2) % 3 == 0, "Sequence length must be 3k+2 for addition with carry."
+        num_digits = seq_length // 3
+        self.X = np.random.randint(0, 10, size=(n_samples, seq_length), dtype=np.int32)
+        self.X[:, num_digits] = 10 # Addition sign
+        self.X[:, num_digits * 2 + 1] = 11 # Equals sign
+        for i in range(n_samples):
+            num1 = self.X[i, :num_digits]
+            num2 = self.X[i, num_digits + 1 : num_digits * 2 + 1]
+            sum12 = np.zeros(num_digits, dtype=np.int32)
+            carry = 0
+            for j in range(num_digits):
+                digit_sum = num1[j] + num2[j] + carry
+                sum12[j] = digit_sum % 10
+                carry = digit_sum // 10
+            self.X[i, num_digits * 2 + 2:] = sum12
+        self.Y = self.X.copy()[:, 1:]
+        self.X = self.X.copy()[:, :-1]
+        self.Y[:, :num_digits * 2 + 1] = -100
+        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
+        self.n_samples = n_samples
+    
+    def __len__(self):
+        return self.n_samples
+    
+    def __getitem__(self, idx):
+        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
+
+
 def compose(i: int, j: int, n: int = 5) -> int:
     p = Permutation.unrank_lex(n, i) 
     q = Permutation.unrank_lex(n, j)
@@ -117,7 +147,8 @@ def get_loaders(data_config):
         "modular_addition": ModularAddition,
         "in_context_recall": InContextRecall,
         "bitwise_xor": BitwiseXOR,
-        "permutation_composition": PermutationComposition
+        "permutation_composition": PermutationComposition,
+        "addition_with_carry": AdditionWithCarry
     }.get(task)
     if Dataset is None:
         raise ValueError(f"Unknown task: {task}")
