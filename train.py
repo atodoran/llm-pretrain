@@ -6,7 +6,7 @@ import torch.nn as nn
 from tqdm import tqdm
 import argparse
 import wandb
-from accelerate import Accelerator
+# from accelerate import Accelerator
 
 from model import get_model
 from data import get_loaders
@@ -34,15 +34,19 @@ def load_checkpoint(model, optimizer, path, device):
 
 def train(
     model,
-    train_loader,
-    val_loader,
+    data_config: DataConfig,
     train_config: TrainConfig,
     save_path=None,
     checkpoint_path=None,
     wandb_enabled=True,
+    regenerate_data=False,
 ):
-    accelerator = Accelerator()
-    device = accelerator.device
+    train_loader, val_loader = get_loaders(data_config)
+
+    # accelerator = Accelerator()
+    # device = accelerator.device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=train_config.learning_rate)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
@@ -61,13 +65,12 @@ def train(
         print(f"Resuming from checkpoint: {checkpoint_path}")
         start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
+    
+    # model, optimizer, train_loader, val_loader = accelerator.prepare(
+    #     model, optimizer, train_loader, val_loader
+    # )
 
-    # Prepare everything with accelerator for multi-GPU support
-    model, optimizer, train_loader, val_loader = accelerator.prepare(
-        model, optimizer, train_loader, val_loader
-    )
-
-    if wandb_enabled and accelerator.is_main_process:
+    if wandb_enabled: # and accelerator.is_main_process:
         run = wandb.init(
             project="llm-pretraining",
             id=run_id,
@@ -83,17 +86,23 @@ def train(
 
     print("Starting training...")
     for epoch in range(start_epoch, epochs):
+        if regenerate_data and epoch > 0:
+            print("Regenerating data...")
+            train_loader, val_loader = get_loaders(data_config)
+            print("Data regenerated.")
 
         # Training loop
         model.train()
         train_loss, train_acc = 0.0, 0.0
         num_train_batches = 0
-        for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", disable=not accelerator.is_local_main_process):
-            targets = targets.long()
+        for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
+            inputs = inputs.to(device)
+            targets = targets.to(device).long()
             optimizer.zero_grad()
             outputs = model(inputs).permute(0, 2, 1)
             loss = loss_fn(outputs, targets)
-            accelerator.backward(loss)
+            # accelerator.backward(loss)
+            loss.backward()
             optimizer.step()
 
             train_loss += loss.item()
@@ -107,8 +116,10 @@ def train(
             num_train_batches += 1
 
         # Gather and average metrics across all processes
-        train_loss = accelerator.gather(torch.tensor(train_loss, device=device)).mean().item() / num_train_batches
-        train_acc = accelerator.gather(torch.tensor(train_acc, device=device)).mean().item() / num_train_batches
+        # train_loss = accelerator.gather(torch.tensor(train_loss, device=device)).mean().item() / num_train_batches
+        # train_acc = accelerator.gather(torch.tensor(train_acc, device=device)).mean().item() / num_train_batches
+        train_loss = train_loss / num_train_batches
+        train_acc = train_acc / num_train_batches
         train_losses.append(train_loss)
         train_accs.append(train_acc)
 
@@ -117,8 +128,9 @@ def train(
         val_loss, val_acc = 0.0, 0.0
         num_val_batches = 0
         with torch.no_grad():
-            for inputs, targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}", disable=not accelerator.is_local_main_process):
-                targets = targets.long()
+            for inputs, targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}"):
+                inputs = inputs.to(device)
+                targets = targets.to(device).long()
                 outputs = model(inputs).permute(0, 2, 1)
                 loss = loss_fn(outputs, targets)
 
@@ -132,36 +144,41 @@ def train(
                     val_acc += 1.0
                 num_val_batches += 1
         
-        val_loss = accelerator.gather(torch.tensor(val_loss, device=device)).mean().item() / num_val_batches
-        val_acc = accelerator.gather(torch.tensor(val_acc, device=device)).mean().item() / num_val_batches
+        # val_loss = accelerator.gather(torch.tensor(val_loss, device=device)).mean().item() / num_val_batches
+        # val_acc = accelerator.gather(torch.tensor(val_acc, device=device)).mean().item() / num_val_batches
+        val_loss = val_loss / num_val_batches
+        val_acc = val_acc / num_val_batches
         val_losses.append(val_loss)
         val_accs.append(val_acc)
 
-        if accelerator.is_main_process:
-            print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-                  f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
+        # if accelerator.is_main_process:
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
 
-            if wandb_enabled:
-                wandb.log({
-                    "epoch": epoch + 1,
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_loss": val_loss,
-                    "val_acc": val_acc,
-                })
+        if wandb_enabled:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+            })
 
-            if checkpoint_path:
-                save_checkpoint(accelerator.unwrap_model(model), optimizer, epoch + 1, checkpoint_path, run_id)
-            if save_path:
-                torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
+        if checkpoint_path:
+            # save_checkpoint(accelerator.unwrap_model(model), optimizer, epoch + 1, checkpoint_path, run_id)
+            save_checkpoint(model, optimizer, epoch + 1, checkpoint_path, run_id)
+        if save_path:
+            # torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
+            torch.save(model.state_dict(), save_path)
     
-    if wandb_enabled and accelerator.is_main_process:
+    if wandb_enabled: # and accelerator.is_main_process:
         wandb.finish()
 
 def main():
     parser = argparse.ArgumentParser(description="Train the model.")
     parser.add_argument('--save_path', type=str, default=None, help='Path to save the final model.')
     parser.add_argument('--no-wandb', action='store_true', help='If True, use Weights & Biases for logging.')
+    parser.add_argument('--regenerate', action='store_true', help='If True, regenerate data every epoch.')
     args = parser.parse_args()
 
     print("Loading configs...")
@@ -178,7 +195,6 @@ def main():
     np.random.seed(data_config.seed)
     torch.manual_seed(data_config.seed)
     torch.cuda.manual_seed(data_config.seed)
-    loader_train, loader_val = get_loaders(data_config)
 
     # Model
     print("Building the model...")
@@ -190,12 +206,12 @@ def main():
 
     train(
         model=model,
-        train_loader=loader_train,
-        val_loader=loader_val,
+        data_config=data_config,
         train_config=train_config,
         save_path=save_path,
         checkpoint_path=checkpoint_path,
         wandb_enabled=not args.no_wandb,
+        regenerate_data=args.regenerate,
     )
 
 if __name__ == "__main__":
