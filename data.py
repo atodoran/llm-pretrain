@@ -20,12 +20,16 @@ class ModularAddition(Dataset):
 
 
 class InContextRecall(Dataset):
-    def __init__(self, n_samples, seq_length, num_keys=16, num_values=16):
+    def __init__(self, n_samples, seq_length, num_keys=8, num_values=8):
         assert seq_length % 2 == 0, "Sequence length must be even for in-context recall."
-        value_of_key = np.random.randint(0, num_values, size=num_keys)
+        value_of_key = np.random.randint(0, num_values, size=(n_samples, num_keys), dtype=np.int32)
 
-        keys = np.random.randint(0, num_keys, size=(n_samples, seq_length // 2))
-        values = np.array([value_of_key[key] for key in keys.flatten()]).reshape(n_samples, seq_length // 2)
+        keys = np.random.randint(0, num_keys, size=(n_samples, seq_length // 2), dtype=np.int32)
+        values = np.empty((n_samples, seq_length // 2), dtype=np.int32)
+        for i in range(n_samples):
+            for j in range(seq_length // 2):
+                values[i, j] = value_of_key[i, keys[i, j]]
+        
         values_masked = values.copy()
         for i in range(n_samples):
             seen_keys = set()
@@ -34,12 +38,12 @@ class InContextRecall(Dataset):
                     values_masked[i, j] = -100
                     seen_keys.add(keys[i, j])
 
-        kv_array = np.empty((n_samples, seq_length), dtype=keys.dtype)
+        kv_array = np.empty((n_samples, seq_length), dtype=np.int32)
         kv_array[:, 0::2] = keys
         kv_array[:, 1::2] = values
         self.X = kv_array[:, :-1].copy()
 
-        kv_array_masked = np.empty((n_samples, seq_length), dtype=keys.dtype)
+        kv_array_masked = np.empty((n_samples, seq_length), dtype=np.int32)
         kv_array_masked[:, 0::2] = -100
         kv_array_masked[:, 1::2] = values_masked
         self.Y = kv_array_masked[:, 1:]
@@ -58,6 +62,36 @@ class BitwiseXOR(Dataset):
     def __init__(self, n_samples, seq_length, max_num=16):
         self.X = np.random.randint(0, max_num, size=(n_samples, seq_length))
         self.Y = np.bitwise_xor.accumulate(self.X, axis=1)
+        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
+        self.n_samples = n_samples
+    
+    def __len__(self):
+        return self.n_samples
+    
+    def __getitem__(self, idx):
+        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
+
+
+class AdditionWithCarry(Dataset):
+    def __init__(self, n_samples, seq_length):
+        assert (seq_length - 2) % 3 == 0, "Sequence length must be 3k+2 for addition with carry."
+        num_digits = seq_length // 3
+        self.X = np.random.randint(0, 10, size=(n_samples, seq_length), dtype=np.int32)
+        self.X[:, num_digits] = 10 # Addition sign
+        self.X[:, num_digits * 2 + 1] = 11 # Equals sign
+        for i in range(n_samples):
+            num1 = self.X[i, :num_digits]
+            num2 = self.X[i, num_digits + 1 : num_digits * 2 + 1]
+            sum12 = np.zeros(num_digits, dtype=np.int32)
+            carry = 0
+            for j in range(num_digits):
+                digit_sum = num1[j] + num2[j] + carry
+                sum12[j] = digit_sum % 10
+                carry = digit_sum // 10
+            self.X[i, num_digits * 2 + 2:] = sum12
+        self.Y = self.X.copy()[:, 1:]
+        self.X = self.X.copy()[:, :-1]
+        self.Y[:, :num_digits * 2 + 1] = -100
         self.X, self.Y = self.X.astype(int), self.Y.astype(int)
         self.n_samples = n_samples
     
@@ -113,7 +147,8 @@ def get_loaders(data_config):
         "modular_addition": ModularAddition,
         "in_context_recall": InContextRecall,
         "bitwise_xor": BitwiseXOR,
-        "permutation_composition": PermutationComposition
+        "permutation_composition": PermutationComposition,
+        "addition_with_carry": AdditionWithCarry
     }.get(task)
     if Dataset is None:
         raise ValueError(f"Unknown task: {task}")
