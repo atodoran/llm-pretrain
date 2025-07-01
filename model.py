@@ -1,7 +1,7 @@
-from x_transformers import Encoder, TransformerWrapper
+from x_transformers import Decoder, TransformerWrapper
 
 def get_model(model_config):
-    attn_layers = Encoder(
+    attn_layers = Decoder(
         depth=model_config.depth,
         dim=model_config.dim,
         heads=model_config.attn_heads,
