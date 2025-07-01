@@ -9,14 +9,13 @@ class ModularAddition(Dataset):
     def __init__(self, n_samples, seq_length, modulo=2):
         self.X = np.random.randint(0, modulo, size=(n_samples, seq_length))
         self.Y = np.cumsum(self.X, axis=1) % modulo
-        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
         self.n_samples = n_samples
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
+        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
 
 
 class InContextRecall(Dataset):
@@ -48,28 +47,26 @@ class InContextRecall(Dataset):
         kv_array_masked[:, 1::2] = values_masked
         self.Y = kv_array_masked[:, 1:]
 
-        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
         self.n_samples = n_samples
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
+        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
 
 
 class BitwiseXOR(Dataset):
     def __init__(self, n_samples, seq_length, max_num=16):
         self.X = np.random.randint(0, max_num, size=(n_samples, seq_length))
         self.Y = np.bitwise_xor.accumulate(self.X, axis=1)
-        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
         self.n_samples = n_samples
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
+        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
 
 
 class AdditionWithCarry(Dataset):
@@ -92,14 +89,13 @@ class AdditionWithCarry(Dataset):
         self.Y = self.X.copy()[:, 1:]
         self.X = self.X.copy()[:, :-1]
         self.Y[:, :num_digits * 2 + 1] = -100
-        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
         self.n_samples = n_samples
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
+        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
 
 
 def compose(i: int, j: int, n: int = 5) -> int:
@@ -119,14 +115,13 @@ class PermutationComposition(Dataset):
                 curr = table[curr, self.X[i,j]]
                 self.Y[i,j] = curr
         
-        self.X, self.Y = self.X.astype(int), self.Y.astype(int)
         self.n_samples = n_samples
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.float32), torch.tensor(self.Y[idx], dtype=torch.float32)
+        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
 
 
 def collate_fn(batch):
