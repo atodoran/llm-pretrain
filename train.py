@@ -6,7 +6,6 @@ import torch.nn as nn
 from tqdm import tqdm
 import argparse
 import wandb
-# from accelerate import Accelerator
 
 from model import get_model
 from data import get_loaders
@@ -42,10 +41,9 @@ def train(
     wandb_enabled=True,
     regenerate_data=False,
 ):
+    print("Building the dataset...")
     train_loader, val_loader = get_loaders(data_config)
 
-    # accelerator = Accelerator()
-    # device = accelerator.device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
@@ -67,11 +65,7 @@ def train(
         start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
     
-    # model, optimizer, train_loader, val_loader = accelerator.prepare(
-    #     model, optimizer, train_loader, val_loader
-    # )
-
-    if wandb_enabled: # and accelerator.is_main_process:
+    if wandb_enabled:
         run = wandb.init(
             project="llm-pretraining",
             id=run_id,
@@ -109,7 +103,6 @@ def train(
             optimizer.zero_grad()
             outputs = model(inputs).permute(0, 2, 1)
             loss = loss_fn(outputs, targets)
-            # accelerator.backward(loss)
             loss.backward()
             optimizer.step()
 
@@ -123,9 +116,6 @@ def train(
                 train_acc += 1.0
             num_train_batches += 1
 
-        # Gather and average metrics across all processes
-        # train_loss = accelerator.gather(torch.tensor(train_loss, device=device)).mean().item() / num_train_batches
-        # train_acc = accelerator.gather(torch.tensor(train_acc, device=device)).mean().item() / num_train_batches
         train_loss = train_loss / num_train_batches
         train_acc = train_acc / num_train_batches
         train_losses.append(train_loss)
@@ -152,14 +142,11 @@ def train(
                     val_acc += 1.0
                 num_val_batches += 1
         
-        # val_loss = accelerator.gather(torch.tensor(val_loss, device=device)).mean().item() / num_val_batches
-        # val_acc = accelerator.gather(torch.tensor(val_acc, device=device)).mean().item() / num_val_batches
         val_loss = val_loss / num_val_batches
         val_acc = val_acc / num_val_batches
         val_losses.append(val_loss)
         val_accs.append(val_acc)
 
-        # if accelerator.is_main_process:
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
                 f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
 
@@ -173,13 +160,11 @@ def train(
             })
 
         if checkpoint_path:
-            # save_checkpoint(accelerator.unwrap_model(model), optimizer, epoch + 1, checkpoint_path, run_id)
             save_checkpoint(model, optimizer, epoch + 1, checkpoint_path, run_id)
         if save_path:
-            # torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
             torch.save(model.state_dict(), save_path)
     
-    if wandb_enabled: # and accelerator.is_main_process:
+    if wandb_enabled:
         wandb.finish()
 
 def main():
@@ -199,7 +184,6 @@ def main():
     model_config = ModelConfig.from_dict(kwargs=load_yml(model_config_path))
     
     # Data
-    print("Building the dataset...")
     np.random.seed(data_config.seed)
     torch.manual_seed(data_config.seed)
     torch.cuda.manual_seed(data_config.seed)
