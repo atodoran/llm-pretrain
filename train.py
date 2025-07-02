@@ -74,17 +74,11 @@ def train(
 
     checkpoint_path = None
     if resume:
-        if isinstance(resume, str):
-            checkpoint_path = get_latest_checkpoint(run_name_base + "_" + resume)
-        else:
-            checkpoint_path = get_latest_checkpoint(run_name_base)
-        if checkpoint_path:
-            run_name = os.path.basename(checkpoint_path)[:-4]
-        else:
-            if name is None:
-                name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-            run_name = f"{run_name_base}_{name}"
-            checkpoint_path = os.path.join("logs", f"{run_name}.pth")
+        run_name_prefix = run_name_base + "_" + resume if isinstance(resume, str) else run_name_base
+        checkpoint_path = get_latest_checkpoint(run_name_prefix)
+        if checkpoint_path == None:
+            raise ValueError(f"No checkpoint found for prefix: {run_name_prefix}.")
+        run_name = os.path.basename(checkpoint_path)[:-4]
     else:
         if name is None:
             name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))

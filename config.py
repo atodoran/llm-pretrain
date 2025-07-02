@@ -35,7 +35,7 @@ class ModelConfig(Config):
 @dataclass
 class DataConfig(Config):
     seed: int = 0
-    task: str = 'modular_add'
+    task: str = 'modular_addition'
     n_train_samples: int = 1000000
     n_val_samples: int = 10000
     seq_length: int = 32
