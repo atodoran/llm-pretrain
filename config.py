@@ -41,6 +41,7 @@ class DataConfig(Config):
     seq_length: int = 32
     batch_size: int = 128
     num_workers: int = 4
+    regenerate: bool = False
 
     # Task-specific parameters
     modulo:     int = field(default=2,  metadata={"task": ["modular_addition"]})

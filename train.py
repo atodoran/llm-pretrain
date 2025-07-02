@@ -10,8 +10,7 @@ import wandb
 from model import get_model
 from data import get_loaders
 from config import TrainConfig, ModelConfig, DataConfig, load_yml
-import random
-import string
+from utils import get_run_name
 
 def save_checkpoint(model, optimizer, epoch, path, wandb_id):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -33,6 +32,18 @@ def load_checkpoint(model, optimizer, path, device):
     wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
 
+def get_latest_checkpoint(run_name=None):
+    checkpoints = [os.path.join("logs", f) for f in os.listdir("logs") if f.endswith(".pth")]
+    if not checkpoints:
+        return None
+    if run_name:
+        # Match files that start with run_name except the last 6 chars (random suffix)
+        prefix = run_name[:-6] if len(run_name) > 6 else run_name
+        checkpoints = [ckpt for ckpt in checkpoints if os.path.basename(ckpt).startswith(prefix)]
+        if not checkpoints:
+            return None
+    return max(checkpoints, key=os.path.getmtime)
+
 def train(
     model,
     data_config: DataConfig,
@@ -41,10 +52,11 @@ def train(
     save_path=None,
     checkpoint_path=None,
     wandb_enabled=True,
-    regenerate_data=False,
+    new_run=False,
 ):
-    print("Building the dataset...")
-    train_loader, val_loader = get_loaders(data_config)
+
+    os.makedirs("logs", exist_ok=True)
+    os.makedirs("models", exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -52,48 +64,31 @@ def train(
     optimizer = optim.AdamW(model.parameters(), lr=train_config.learning_rate)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     epochs = train_config.epochs
+    
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    train_losses, train_accs = [], []
-    val_losses, val_accs = [], []
-
-    if checkpoint_path:
-        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    if checkpoint_path == None:
+        run_name = get_run_name(
+            data_config=data_config,
+            train_config=train_config,
+            num_params=num_params,
+        )
+        checkpoint_path = get_latest_checkpoint(run_name)
+        if new_run or checkpoint_path is None:
+            checkpoint_path = os.path.join("logs", f"{run_name}.pth")
+        else:
+            run_name = os.path.basename(checkpoint_path)[:-4]
+    
+    if save_path == None:
+        save_path = os.path.join("models", f"{run_name}.pth")
     
     start_epoch, run_id = 0, None
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Resuming from checkpoint: {checkpoint_path}")
         start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
-    
+
     if wandb_enabled:
-        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-        def format_task_name(task):
-            return task.replace("_", "-")
-
-        def human_readable_params(num):
-            if num >= 1e9:
-                return f"{num/1e9:.0f}B"
-            elif num >= 1e6:
-                return f"{num/1e6:.0f}M"
-            elif num >= 1e3:
-                return f"{num/1e3:.0f}K"
-            else:
-                return str(num)
-
-        def random_string(length=6):
-            return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
-
-        lr_str = f"{train_config.learning_rate:.0e}" if train_config.learning_rate < 1e-3 else f"{train_config.learning_rate:.3f}"
-        run_name = (
-            f"{format_task_name(data_config.task)}-"
-            f"{human_readable_params(num_params)}-"
-            f"lr={lr_str}-"
-            f"{random_string()}"
-        )
-
         run = wandb.init(
             project="llm-pretraining",
             id=run_id,
@@ -101,24 +96,33 @@ def train(
             name=run_name,
             config={
                 "task": data_config.task,
-                "num_params": num_params,
                 "n_train_samples": data_config.n_train_samples,
                 "n_val_samples": data_config.n_val_samples,
                 "seq_length": data_config.seq_length,
-                "regenerate": regenerate_data,
+                "regenerate": data_config.regenerate,
                 "depth": model_config.depth,
                 "dim": model_config.dim,
                 "attn_heads": model_config.attn_heads,
                 "learning_rate": train_config.learning_rate,
-                "batch_size": train_loader.batch_size,
+                "batch_size": data_config.batch_size,
+                "num_params": num_params
             },
         )
         run_id = run.id
         wandb.watch(model, log="all")
+    
+    print("Building the dataset...")
+    train_loader, val_loader = get_loaders(data_config)
+
+    train_losses, train_accs = [], []
+    val_losses, val_accs = [], []
 
     print("Starting training...")
+    best_val_loss = float('inf')
     for epoch in range(start_epoch, epochs):
-        if regenerate_data and epoch > start_epoch:
+        print(f"\nEpoch {epoch + 1}/{epochs}")
+
+        if data_config.regenerate and epoch > start_epoch:
             print("Regenerating data...")
             train_loader, val_loader = get_loaders(data_config)
             print("Data regenerated.")
@@ -127,7 +131,7 @@ def train(
         model.train()
         train_loss, train_acc = 0.0, 0.0
         num_train_batches = 0
-        for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
+        for inputs, targets in tqdm(train_loader, desc=f"Training  "):
             inputs = inputs.to(device)
             targets = targets.to(device).long()
             optimizer.zero_grad()
@@ -156,7 +160,7 @@ def train(
         val_loss, val_acc = 0.0, 0.0
         num_val_batches = 0
         with torch.no_grad():
-            for inputs, targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}"):
+            for inputs, targets in tqdm(val_loader, desc=f"Validation"):
                 inputs = inputs.to(device)
                 targets = targets.to(device).long()
                 outputs = model(inputs).permute(0, 2, 1)
@@ -178,7 +182,7 @@ def train(
         val_accs.append(val_acc)
 
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
+                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
 
         if wandb_enabled:
             wandb.log({
@@ -191,17 +195,20 @@ def train(
 
         if checkpoint_path:
             save_checkpoint(model, optimizer, epoch + 1, checkpoint_path, run_id)
-        if save_path:
-            torch.save(model.state_dict(), save_path)
+
+        if save_path and val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint(model, optimizer, epoch + 1, save_path, run_id)
     
     if wandb_enabled:
         wandb.finish()
 
 def main():
     parser = argparse.ArgumentParser(description="Train the model.")
-    parser.add_argument('--save_path', type=str, default=None, help='Path to save the final model.')
+    parser.add_argument('--save-path', type=str, default=None, help='Path to save the best model.')
+    parser.add_argument('--checkpoint-path', type=str, default=None, help='Path to checkpoint to train from.')
     parser.add_argument('--no-wandb', action='store_true', help='If True, disable Weights & Biases for logging.')
-    parser.add_argument('--regenerate', action='store_true', help='If True, regenerate data every epoch.')
+    parser.add_argument('--new-run', action='store_true', help='If True, ignore checkpoints and start new run.')
     args = parser.parse_args()
 
     print("Loading configs...")
@@ -223,7 +230,7 @@ def main():
     model = get_model(model_config)
 
     # Checkpoint and model save paths
-    checkpoint_path = os.path.join("logs", "checkpoint.pth")
+    checkpoint_path = os.path.join("logs", args.checkpoint_path) if args.checkpoint_path else None
     save_path = os.path.join("models", args.save_path) if args.save_path else None
 
     train(
@@ -234,7 +241,7 @@ def main():
         save_path=save_path,
         checkpoint_path=checkpoint_path,
         wandb_enabled=not args.no_wandb,
-        regenerate_data=args.regenerate,
+        new_run=args.new_run,
     )
 
 if __name__ == "__main__":
