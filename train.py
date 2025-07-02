@@ -10,6 +10,8 @@ import wandb
 from model import get_model
 from data import get_loaders
 from config import TrainConfig, ModelConfig, DataConfig, load_yml
+import random
+import string
 
 def save_checkpoint(model, optimizer, epoch, path, wandb_id):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -66,12 +68,40 @@ def train(
         print(f"Resumed from epoch {start_epoch}")
     
     if wandb_enabled:
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+        def format_task_name(task):
+            return task.replace("_", "-")
+
+        def human_readable_params(num):
+            if num >= 1e9:
+                return f"{num/1e9:.0f}B"
+            elif num >= 1e6:
+                return f"{num/1e6:.0f}M"
+            elif num >= 1e3:
+                return f"{num/1e3:.0f}K"
+            else:
+                return str(num)
+
+        def random_string(length=6):
+            return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
+
+        lr_str = f"{train_config.learning_rate:.0e}" if train_config.learning_rate < 1e-3 else f"{train_config.learning_rate:.3f}"
+        run_name = (
+            f"{format_task_name(data_config.task)}-"
+            f"{human_readable_params(num_params)}-"
+            f"lr={lr_str}-"
+            f"{random_string()}"
+        )
+
         run = wandb.init(
             project="llm-pretraining",
             id=run_id,
             resume="allow",
+            name=run_name,
             config={
                 "task": data_config.task,
+                "num_params": num_params,
                 "n_train_samples": data_config.n_train_samples,
                 "n_val_samples": data_config.n_val_samples,
                 "seq_length": data_config.seq_length,
@@ -88,7 +118,7 @@ def train(
 
     print("Starting training...")
     for epoch in range(start_epoch, epochs):
-        if regenerate_data and epoch > 0:
+        if regenerate_data and epoch > start_epoch:
             print("Regenerating data...")
             train_loader, val_loader = get_loaders(data_config)
             print("Data regenerated.")
@@ -170,7 +200,7 @@ def train(
 def main():
     parser = argparse.ArgumentParser(description="Train the model.")
     parser.add_argument('--save_path', type=str, default=None, help='Path to save the final model.')
-    parser.add_argument('--no-wandb', action='store_true', help='If True, use Weights & Biases for logging.')
+    parser.add_argument('--no-wandb', action='store_true', help='If True, disable Weights & Biases for logging.')
     parser.add_argument('--regenerate', action='store_true', help='If True, regenerate data every epoch.')
     args = parser.parse_args()
 

@@ -72,7 +72,7 @@ class BitwiseXOR(Dataset):
 class AdditionWithCarry(Dataset):
     def __init__(self, n_samples, seq_length):
         assert (seq_length - 2) % 3 == 0, "Sequence length must be 3k+2 for addition with carry."
-        num_digits = seq_length // 3
+        num_digits = (seq_length - 2) // 3
         self.X = np.random.randint(0, 10, size=(n_samples, seq_length), dtype=np.int32)
         self.X[:, num_digits] = 10 # Addition sign
         self.X[:, num_digits * 2 + 1] = 11 # Equals sign
