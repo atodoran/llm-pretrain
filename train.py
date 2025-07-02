@@ -6,11 +6,13 @@ import torch.nn as nn
 from tqdm import tqdm
 import argparse
 import wandb
+import random
+import string
 
 from model import get_model
 from data import get_loaders
 from config import TrainConfig, ModelConfig, DataConfig, load_yml
-from utils import get_run_name
+from utils import get_run_name_base
 
 def save_checkpoint(model, optimizer, epoch, path, wandb_id):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -32,16 +34,15 @@ def load_checkpoint(model, optimizer, path, device):
     wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
 
-def get_latest_checkpoint(run_name=None):
+def get_latest_checkpoint(run_name_prefix):
     checkpoints = [os.path.join("logs", f) for f in os.listdir("logs") if f.endswith(".pth")]
+    if run_name_prefix is not None:
+        checkpoints = [
+            ckpt for ckpt in checkpoints
+            if os.path.basename(ckpt).startswith(run_name_prefix)
+        ]
     if not checkpoints:
         return None
-    if run_name:
-        # Match files that start with run_name except the last 6 chars (random suffix)
-        prefix = run_name[:-6] if len(run_name) > 6 else run_name
-        checkpoints = [ckpt for ckpt in checkpoints if os.path.basename(ckpt).startswith(prefix)]
-        if not checkpoints:
-            return None
     return max(checkpoints, key=os.path.getmtime)
 
 def train(
@@ -49,10 +50,9 @@ def train(
     data_config: DataConfig,
     train_config: TrainConfig,
     model_config: ModelConfig,
-    save_path=None,
-    checkpoint_path=None,
     wandb_enabled=True,
-    new_run=False,
+    resume=None,
+    name=None,
 ):
 
     os.makedirs("logs", exist_ok=True)
@@ -66,21 +66,32 @@ def train(
     epochs = train_config.epochs
     
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    run_name_base = get_run_name_base(
+        data_config=data_config,
+        train_config=train_config,
+        num_params=num_params,
+    )
 
-    if checkpoint_path == None:
-        run_name = get_run_name(
-            data_config=data_config,
-            train_config=train_config,
-            num_params=num_params,
-        )
-        checkpoint_path = get_latest_checkpoint(run_name)
-        if new_run or checkpoint_path is None:
-            checkpoint_path = os.path.join("logs", f"{run_name}.pth")
+    checkpoint_path = None
+    if resume:
+        if isinstance(resume, str):
+            checkpoint_path = get_latest_checkpoint(run_name_base + "_" + resume)
         else:
+            checkpoint_path = get_latest_checkpoint(run_name_base)
+        if checkpoint_path:
             run_name = os.path.basename(checkpoint_path)[:-4]
-    
-    if save_path == None:
-        save_path = os.path.join("models", f"{run_name}.pth")
+        else:
+            if name is None:
+                name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            run_name = f"{run_name_base}_{name}"
+            checkpoint_path = os.path.join("logs", f"{run_name}.pth")
+    else:
+        if name is None:
+            name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        run_name = f"{run_name_base}_{name}"
+        checkpoint_path = os.path.join("logs", f"{run_name}.pth")
+
+    save_path = os.path.join("models", f"{run_name}.pth")
     
     start_epoch, run_id = 0, None
     if checkpoint_path and os.path.exists(checkpoint_path):
@@ -205,10 +216,10 @@ def train(
 
 def main():
     parser = argparse.ArgumentParser(description="Train the model.")
-    parser.add_argument('--save-path', type=str, default=None, help='Path to save the best model.')
-    parser.add_argument('--checkpoint-path', type=str, default=None, help='Path to checkpoint to train from.')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--resume', nargs='?', const=True, default=None, help='Resume from checkpoint. Optionally specify a signature.')
+    group.add_argument('--name', type=str, default=None, help='Signature for the run (new run only).')
     parser.add_argument('--no-wandb', action='store_true', help='If True, disable Weights & Biases for logging.')
-    parser.add_argument('--new-run', action='store_true', help='If True, ignore checkpoints and start new run.')
     args = parser.parse_args()
 
     print("Loading configs...")
@@ -228,20 +239,14 @@ def main():
     # Model
     print("Building the model...")
     model = get_model(model_config)
-
-    # Checkpoint and model save paths
-    checkpoint_path = os.path.join("logs", args.checkpoint_path) if args.checkpoint_path else None
-    save_path = os.path.join("models", args.save_path) if args.save_path else None
-
     train(
         model=model,
         data_config=data_config,
         train_config=train_config,
         model_config=model_config,
-        save_path=save_path,
-        checkpoint_path=checkpoint_path,
         wandb_enabled=not args.no_wandb,
-        new_run=args.new_run,
+        resume=args.resume,
+        name=args.name,
     )
 
 if __name__ == "__main__":
