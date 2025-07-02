@@ -8,10 +8,12 @@ import argparse
 import wandb
 import random
 import string
+import hydra
+from omegaconf import DictConfig
+import sys
 
 from model import get_model
 from data import get_loaders
-from config import TrainConfig, ModelConfig, DataConfig, load_yml
 from utils import get_run_name_base
 
 def save_checkpoint(model, optimizer, epoch, path, wandb_id):
@@ -47,12 +49,7 @@ def get_latest_checkpoint(run_name_prefix):
 
 def train(
     model,
-    data_config: DataConfig,
-    train_config: TrainConfig,
-    model_config: ModelConfig,
-    wandb_enabled=True,
-    resume=None,
-    name=None,
+    config: DictConfig,
 ):
 
     os.makedirs("logs", exist_ok=True)
@@ -61,19 +58,19 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=train_config.learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=config.train.learning_rate)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    epochs = train_config.epochs
+    epochs = config.train.epochs
     
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     run_name_base = get_run_name_base(
-        data_config=data_config,
-        train_config=train_config,
+        config=config,
         num_params=num_params,
     )
 
+    resume, name = config.train.resume, config.train.name
     checkpoint_path = None
-    if resume:
+    if resume is not None:
         run_name_prefix = run_name_base + "_" + resume if isinstance(resume, str) else run_name_base
         checkpoint_path = get_latest_checkpoint(run_name_prefix)
         if checkpoint_path == None:
@@ -93,23 +90,23 @@ def train(
         start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
 
-    if wandb_enabled:
+    if config.train.wandb:
         run = wandb.init(
             project="llm-pretraining",
             id=run_id,
             resume="allow",
             name=run_name,
             config={
-                "task": data_config.task,
-                "n_train_samples": data_config.n_train_samples,
-                "n_val_samples": data_config.n_val_samples,
-                "seq_length": data_config.seq_length,
-                "regenerate": data_config.regenerate,
-                "depth": model_config.depth,
-                "dim": model_config.dim,
-                "attn_heads": model_config.attn_heads,
-                "learning_rate": train_config.learning_rate,
-                "batch_size": data_config.batch_size,
+                "task": config.data.task,
+                "n_train_samples": config.data.n_train_samples,
+                "n_val_samples": config.data.n_val_samples,
+                "seq_length": config.data.seq_length,
+                "regenerate": config.data.regenerate,
+                "depth": config.model.depth,
+                "dim": config.model.dim,
+                "attn_heads": config.model.attn_heads,
+                "learning_rate": config.train.learning_rate,
+                "batch_size": config.data.batch_size,
                 "num_params": num_params
             },
         )
@@ -117,7 +114,7 @@ def train(
         wandb.watch(model, log="all")
     
     print("Building the dataset...")
-    train_loader, val_loader = get_loaders(data_config)
+    train_loader, val_loader = get_loaders(config)
 
     train_losses, train_accs = [], []
     val_losses, val_accs = [], []
@@ -127,9 +124,9 @@ def train(
     for epoch in range(start_epoch, epochs):
         print(f"\nEpoch {epoch + 1}/{epochs}")
 
-        if data_config.regenerate and epoch > start_epoch:
+        if config.data.regenerate and epoch > start_epoch:
             print("Regenerating data...")
-            train_loader, val_loader = get_loaders(data_config)
+            train_loader, val_loader = get_loaders(config)
             print("Data regenerated.")
 
         # Training loop
@@ -189,7 +186,7 @@ def train(
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
                 f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
 
-        if wandb_enabled:
+        if config.train.wandb:
             wandb.log({
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
@@ -205,42 +202,25 @@ def train(
             best_val_loss = val_loss
             save_checkpoint(model, optimizer, epoch + 1, save_path, run_id)
     
-    if wandb_enabled:
+    if config.train.wandb:
         wandb.finish()
 
-def main():
-    parser = argparse.ArgumentParser(description="Train the model.")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('--resume', nargs='?', const=True, default=None, help='Resume from checkpoint. Optionally specify a signature.')
-    group.add_argument('--name', type=str, default=None, help='Signature for the run (new run only).')
-    parser.add_argument('--no-wandb', action='store_true', help='If True, disable Weights & Biases for logging.')
-    args = parser.parse_args()
-
-    print("Loading configs...")
-    train_config_path = os.path.join('configs', 'train.yaml')
-    data_config_path = os.path.join('configs', 'data.yaml')
-    model_config_path = os.path.join('configs', 'model.yaml')
-
-    train_config = TrainConfig.from_dict(kwargs=load_yml(train_config_path))
-    data_config = DataConfig.from_dict(kwargs=load_yml(data_config_path))
-    model_config = ModelConfig.from_dict(kwargs=load_yml(model_config_path))
+@hydra.main(version_base=None, config_path="configs", config_name="config")
+def main(config: DictConfig):
     
-    # Data
-    np.random.seed(data_config.seed)
-    torch.manual_seed(data_config.seed)
-    torch.cuda.manual_seed(data_config.seed)
+    np.random.seed(config.data.seed)
+    torch.manual_seed(config.data.seed)
+    torch.cuda.manual_seed(config.data.seed)
 
-    # Model
+    if config.train.name is not None and config.train.resume is not None:
+        raise ValueError("Cannot specify both 'name' and 'resume'.")
+
     print("Building the model...")
-    model = get_model(model_config)
+    model = get_model(config)
+
     train(
         model=model,
-        data_config=data_config,
-        train_config=train_config,
-        model_config=model_config,
-        wandb_enabled=not args.no_wandb,
-        resume=args.resume,
-        name=args.name,
+        config=config,
     )
 
 if __name__ == "__main__":

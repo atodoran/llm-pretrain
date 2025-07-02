@@ -1,4 +1,4 @@
-def get_run_name_base (data_config, train_config, num_params):
+def get_run_name_base (config, num_params):
     def human_readable_params(num):
         if num >= 1e9:
             return f"{num/1e9:.0f}B"
@@ -9,9 +9,10 @@ def get_run_name_base (data_config, train_config, num_params):
         else:
             return str(num)
 
-    lr_str = f"{train_config.learning_rate:.0e}" if train_config.learning_rate < 1e-3 else f"{train_config.learning_rate:.3f}"
+    lr = config.train.learning_rate
+    lr_str = f"{lr:.0e}" if lr < 1e-3 else f"{lr:.3f}"
     run_name = (
-        f"{data_config.task}_"
+        f"{config.data.task}_"
         f"{human_readable_params(num_params)}_"
         f"{lr_str}"
     )
