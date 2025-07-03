@@ -6,10 +6,15 @@ import torch.nn as nn
 from tqdm import tqdm
 import argparse
 import wandb
+import random
+import string
+import hydra
+from omegaconf import DictConfig
+import sys
 
 from model import get_model
 from data import get_loaders
-from config import TrainConfig, ModelConfig, DataConfig, load_yml
+from utils import get_run_name_base
 
 def save_checkpoint(model, optimizer, epoch, path, wandb_id):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -31,73 +36,104 @@ def load_checkpoint(model, optimizer, path, device):
     wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
 
+def get_latest_checkpoint(run_name_prefix):
+    checkpoints = [os.path.join("logs", f) for f in os.listdir("logs") if f.endswith(".pth")]
+    if run_name_prefix is not None:
+        checkpoints = [
+            ckpt for ckpt in checkpoints
+            if os.path.basename(ckpt).startswith(run_name_prefix)
+        ]
+    if not checkpoints:
+        return None
+    return max(checkpoints, key=os.path.getmtime)
+
 def train(
     model,
-    data_config: DataConfig,
-    train_config: TrainConfig,
-    model_config: ModelConfig,
-    save_path=None,
-    checkpoint_path=None,
-    wandb_enabled=True,
-    regenerate_data=False,
+    config: DictConfig,
 ):
-    print("Building the dataset...")
-    train_loader, val_loader = get_loaders(data_config)
+
+    os.makedirs("logs", exist_ok=True)
+    os.makedirs("models", exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=train_config.learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=config.train.learning_rate)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    epochs = train_config.epochs
+    epochs = config.train.epochs
+    
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    run_name_base = get_run_name_base(
+        config=config,
+        num_params=num_params,
+    )
 
-    train_losses, train_accs = [], []
-    val_losses, val_accs = [], []
+    resume, name = config.train.resume, config.train.name
+    checkpoint_path = None
+    if resume is not None:
+        run_name_prefix = run_name_base + "_" + resume if isinstance(resume, str) else run_name_base
+        checkpoint_path = get_latest_checkpoint(run_name_prefix)
+        if checkpoint_path == None:
+            raise ValueError(f"No checkpoint found for prefix: {run_name_prefix}.")
+        run_name = os.path.basename(checkpoint_path)[:-4]
+    else:
+        if name is None:
+            name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        run_name = f"{run_name_base}_{name}"
+        checkpoint_path = os.path.join("logs", f"{run_name}.pth")
 
-    if checkpoint_path:
-        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    save_path = os.path.join("models", f"{run_name}.pth")
     
     start_epoch, run_id = 0, None
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Resuming from checkpoint: {checkpoint_path}")
         start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
-    
-    if wandb_enabled:
+
+    if config.train.wandb:
         run = wandb.init(
             project="llm-pretraining",
             id=run_id,
             resume="allow",
+            name=run_name,
             config={
-                "task": data_config.task,
-                "n_train_samples": data_config.n_train_samples,
-                "n_val_samples": data_config.n_val_samples,
-                "seq_length": data_config.seq_length,
-                "regenerate": regenerate_data,
-                "depth": model_config.depth,
-                "dim": model_config.dim,
-                "attn_heads": model_config.attn_heads,
-                "learning_rate": train_config.learning_rate,
-                "batch_size": train_loader.batch_size,
+                "task": config.data.task,
+                "n_train_samples": config.data.n_train_samples,
+                "n_val_samples": config.data.n_val_samples,
+                "seq_length": config.data.seq_length,
+                "regenerate": config.data.regenerate,
+                "depth": config.model.depth,
+                "dim": config.model.dim,
+                "attn_heads": config.model.attn_heads,
+                "learning_rate": config.train.learning_rate,
+                "batch_size": config.data.batch_size,
+                "num_params": num_params
             },
         )
         run_id = run.id
         wandb.watch(model, log="all")
+    
+    print("Building the dataset...")
+    train_loader, val_loader = get_loaders(config)
+
+    train_losses, train_accs = [], []
+    val_losses, val_accs = [], []
 
     print("Starting training...")
+    best_val_loss = float('inf')
     for epoch in range(start_epoch, epochs):
-        if regenerate_data and epoch > 0:
+        print(f"\nEpoch {epoch + 1}/{epochs}")
+
+        if config.data.regenerate and epoch > start_epoch:
             print("Regenerating data...")
-            train_loader, val_loader = get_loaders(data_config)
+            train_loader, val_loader = get_loaders(config)
             print("Data regenerated.")
 
         # Training loop
         model.train()
         train_loss, train_acc = 0.0, 0.0
         num_train_batches = 0
-        for inputs, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
+        for inputs, targets in tqdm(train_loader, desc=f"Training  "):
             inputs = inputs.to(device)
             targets = targets.to(device).long()
             optimizer.zero_grad()
@@ -126,7 +162,7 @@ def train(
         val_loss, val_acc = 0.0, 0.0
         num_val_batches = 0
         with torch.no_grad():
-            for inputs, targets in tqdm(val_loader, desc=f"[EVAL] Epoch {epoch+1}/{epochs}"):
+            for inputs, targets in tqdm(val_loader, desc=f"Validation"):
                 inputs = inputs.to(device)
                 targets = targets.to(device).long()
                 outputs = model(inputs).permute(0, 2, 1)
@@ -148,9 +184,9 @@ def train(
         val_accs.append(val_acc)
 
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}\n")
+                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
 
-        if wandb_enabled:
+        if config.train.wandb:
             wandb.log({
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
@@ -161,50 +197,30 @@ def train(
 
         if checkpoint_path:
             save_checkpoint(model, optimizer, epoch + 1, checkpoint_path, run_id)
-        if save_path:
-            torch.save(model.state_dict(), save_path)
+
+        if save_path and val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint(model, optimizer, epoch + 1, save_path, run_id)
     
-    if wandb_enabled:
+    if config.train.wandb:
         wandb.finish()
 
-def main():
-    parser = argparse.ArgumentParser(description="Train the model.")
-    parser.add_argument('--save_path', type=str, default=None, help='Path to save the final model.')
-    parser.add_argument('--no-wandb', action='store_true', help='If True, use Weights & Biases for logging.')
-    parser.add_argument('--regenerate', action='store_true', help='If True, regenerate data every epoch.')
-    args = parser.parse_args()
-
-    print("Loading configs...")
-    train_config_path = os.path.join('configs', 'train.yaml')
-    data_config_path = os.path.join('configs', 'data.yaml')
-    model_config_path = os.path.join('configs', 'model.yaml')
-
-    train_config = TrainConfig.from_dict(kwargs=load_yml(train_config_path))
-    data_config = DataConfig.from_dict(kwargs=load_yml(data_config_path))
-    model_config = ModelConfig.from_dict(kwargs=load_yml(model_config_path))
+@hydra.main(version_base=None, config_path="configs", config_name="config")
+def main(config: DictConfig):
     
-    # Data
-    np.random.seed(data_config.seed)
-    torch.manual_seed(data_config.seed)
-    torch.cuda.manual_seed(data_config.seed)
+    np.random.seed(config.data.seed)
+    torch.manual_seed(config.data.seed)
+    torch.cuda.manual_seed(config.data.seed)
 
-    # Model
+    if config.train.name is not None and config.train.resume is not None:
+        raise ValueError("Cannot specify both 'name' and 'resume'.")
+
     print("Building the model...")
-    model = get_model(model_config)
-
-    # Checkpoint and model save paths
-    checkpoint_path = os.path.join("logs", "checkpoint.pth")
-    save_path = os.path.join("models", args.save_path) if args.save_path else None
+    model = get_model(config)
 
     train(
         model=model,
-        data_config=data_config,
-        train_config=train_config,
-        model_config=model_config,
-        save_path=save_path,
-        checkpoint_path=checkpoint_path,
-        wandb_enabled=not args.no_wandb,
-        regenerate_data=args.regenerate,
+        config=config,
     )
 
 if __name__ == "__main__":

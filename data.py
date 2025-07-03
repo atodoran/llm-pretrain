@@ -4,6 +4,8 @@ from torch.utils.data import Dataset, DataLoader
 from sympy.combinatorics.permutations import Permutation
 import math
 import tqdm
+from omegaconf import DictConfig
+import inspect
 
 class ModularAddition(Dataset):
     def __init__(self, n_samples, seq_length, modulo=2):
@@ -72,7 +74,7 @@ class BitwiseXOR(Dataset):
 class AdditionWithCarry(Dataset):
     def __init__(self, n_samples, seq_length):
         assert (seq_length - 2) % 3 == 0, "Sequence length must be 3k+2 for addition with carry."
-        num_digits = seq_length // 3
+        num_digits = (seq_length - 2) // 3
         self.X = np.random.randint(0, 10, size=(n_samples, seq_length), dtype=np.int32)
         self.X[:, num_digits] = 10 # Addition sign
         self.X[:, num_digits * 2 + 1] = 11 # Equals sign
@@ -135,8 +137,8 @@ def collate_fn(batch):
     return X, Y
 
 
-def get_loaders(data_config):
-    task = data_config.task
+def get_loaders(config: DictConfig):
+    task = config.data.task
 
     Dataset = {
         "modular_addition": ModularAddition,
@@ -148,30 +150,33 @@ def get_loaders(data_config):
     if Dataset is None:
         raise ValueError(f"Unknown task: {task}")
 
-    task_args = data_config.task_kwargs(task)
+    # Filter out dataset parameters that are not in the Dataset class
+    dataset_params = inspect.signature(Dataset.__init__).parameters
+    valid_keys = [k for k in dataset_params if k != 'self']
+    task_args = {k: v for k, v in config.task.items() if k in valid_keys}
     
     train_set = Dataset(
-        n_samples=data_config.n_train_samples, 
-        seq_length=data_config.seq_length, 
+        n_samples=config.data.n_train_samples, 
+        seq_length=config.data.seq_length, 
         **task_args
     )
     val_set = Dataset(
-        n_samples=data_config.n_val_samples,
-        seq_length=data_config.seq_length,
+        n_samples=config.data.n_val_samples,
+        seq_length=config.data.seq_length,
         **task_args
     )
     
     loader_train = DataLoader(
         train_set, 
-        batch_size=data_config.batch_size, 
+        batch_size=config.data.batch_size, 
         shuffle=True, 
-        collate_fn=collate_fn, num_workers=data_config.num_workers
+        collate_fn=collate_fn, num_workers=config.data.num_workers
     )
     loader_val = DataLoader(
         val_set, 
-        batch_size=data_config.batch_size, 
+        batch_size=config.data.batch_size, 
         shuffle=False, 
-        collate_fn=collate_fn, num_workers=data_config.num_workers
+        collate_fn=collate_fn, num_workers=config.data.num_workers
     )
     
     return loader_train, loader_val
