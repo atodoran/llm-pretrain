@@ -92,6 +92,7 @@ def train(
 
     if config.train.wandb:
         run = wandb.init(
+            entity="harvardml",
             project="llm-pretraining",
             id=run_id,
             resume="allow",
