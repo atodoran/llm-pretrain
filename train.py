@@ -16,6 +16,12 @@ from model import get_model
 from data import get_loaders
 from utils import get_run_name_base
 
+try:
+    profile
+except NameError:
+    def profile(func): return func
+
+
 def save_checkpoint(model, optimizer, epoch, path, wandb_id):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(
@@ -28,6 +34,7 @@ def save_checkpoint(model, optimizer, epoch, path, wandb_id):
         path,
     )
 
+
 def load_checkpoint(model, optimizer, path, device):
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
@@ -35,6 +42,7 @@ def load_checkpoint(model, optimizer, path, device):
     epoch = ckpt["epoch"]
     wandb_id = ckpt.get("wandb_id")
     return epoch, wandb_id
+
 
 def get_latest_checkpoint(run_name_prefix):
     checkpoints = [os.path.join("logs", f) for f in os.listdir("logs") if f.endswith(".pth")]
@@ -47,6 +55,7 @@ def get_latest_checkpoint(run_name_prefix):
         return None
     return max(checkpoints, key=os.path.getmtime)
 
+@profile
 def train(
     model,
     config: DictConfig,

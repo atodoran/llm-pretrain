@@ -12,12 +12,14 @@ class ModularAddition(Dataset):
         self.X = np.random.randint(0, modulo, size=(n_samples, seq_length))
         self.Y = np.cumsum(self.X, axis=1) % modulo
         self.n_samples = n_samples
+        self.X = torch.from_numpy(self.X).long()
+        self.Y = torch.from_numpy(self.Y).long()
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
+        return self.X[idx], self.Y[idx]
 
 
 class InContextRecall(Dataset):
@@ -50,12 +52,14 @@ class InContextRecall(Dataset):
         self.Y = kv_array_masked[:, 1:]
 
         self.n_samples = n_samples
+        self.X = torch.from_numpy(self.X).long()
+        self.Y = torch.from_numpy(self.Y).long()
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
+        return self.X[idx], self.Y[idx]
 
 
 class BitwiseXOR(Dataset):
@@ -63,12 +67,14 @@ class BitwiseXOR(Dataset):
         self.X = np.random.randint(0, max_num, size=(n_samples, seq_length))
         self.Y = np.bitwise_xor.accumulate(self.X, axis=1)
         self.n_samples = n_samples
+        self.X = torch.from_numpy(self.X).long()
+        self.Y = torch.from_numpy(self.Y).long()
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
+        return self.X[idx], self.Y[idx]
 
 
 class AdditionWithCarry(Dataset):
@@ -92,15 +98,17 @@ class AdditionWithCarry(Dataset):
         self.X = self.X.copy()[:, :-1]
         self.Y[:, :num_digits * 2 + 1] = -100
         self.n_samples = n_samples
+        self.X = torch.from_numpy(self.X).long()
+        self.Y = torch.from_numpy(self.Y).long()
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
+        return self.X[idx], self.Y[idx]
 
 
-def compose(i: int, j: int, n: int = 5) -> int:
+def compose(i: int, j: int, n: int) -> int:
     p = Permutation.unrank_lex(n, i) 
     q = Permutation.unrank_lex(n, j)
     r = p * q
@@ -118,12 +126,14 @@ class PermutationComposition(Dataset):
                 self.Y[i,j] = curr
         
         self.n_samples = n_samples
+        self.X = torch.from_numpy(self.X).long()
+        self.Y = torch.from_numpy(self.Y).long()
     
     def __len__(self):
         return self.n_samples
     
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.Y[idx], dtype=torch.long)
+        return self.X[idx], self.Y[idx]
 
 
 def collate_fn(batch):
