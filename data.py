@@ -7,9 +7,16 @@ import tqdm
 from omegaconf import DictConfig
 import inspect
 
+def zipf_probs(vocab, skewness=0):
+    ranks = np.arange(1, vocab + 1)
+    p = ranks ** -skewness
+    np.random.shuffle(p)
+    return p / p.sum()
+
+
 class ModularAddition(Dataset):
-    def __init__(self, n_samples, seq_length, modulo=2):
-        self.X = np.random.randint(0, modulo, size=(n_samples, seq_length))
+    def __init__(self, n_samples, seq_length, modulo=2, skewness=0):
+        self.X = np.random.choice(np.arange(modulo), size=(n_samples, seq_length), p=zipf_probs(modulo, skewness))
         self.Y = np.cumsum(self.X, axis=1) % modulo
         self.n_samples = n_samples
         self.X = torch.from_numpy(self.X).long()
@@ -29,12 +36,12 @@ class InContextRecall(Dataset):
 
         keys = np.random.randint(0, num_keys, size=(n_samples, seq_length // 2), dtype=np.int32)
         values = np.empty((n_samples, seq_length // 2), dtype=np.int32)
-        for i in range(n_samples):
+        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset, step 1/2"):
             for j in range(seq_length // 2):
                 values[i, j] = value_of_key[i, keys[i, j]]
         
         values_masked = values.copy()
-        for i in range(n_samples):
+        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset, step 2/2"):
             seen_keys = set()
             for j in range(seq_length // 2):
                 if keys[i, j] not in seen_keys:
@@ -63,8 +70,8 @@ class InContextRecall(Dataset):
 
 
 class BitwiseXOR(Dataset):
-    def __init__(self, n_samples, seq_length, max_num=16):
-        self.X = np.random.randint(0, max_num, size=(n_samples, seq_length))
+    def __init__(self, n_samples, seq_length, max_num=16, skewness=0):
+        self.X = np.random.choice(np.arange(max_num), size=(n_samples, seq_length), p=zipf_probs(max_num, skewness))
         self.Y = np.bitwise_xor.accumulate(self.X, axis=1)
         self.n_samples = n_samples
         self.X = torch.from_numpy(self.X).long()
@@ -84,7 +91,7 @@ class AdditionWithCarry(Dataset):
         self.X = np.random.randint(0, 10, size=(n_samples, seq_length), dtype=np.int32)
         self.X[:, num_digits] = 10 # Addition sign
         self.X[:, num_digits * 2 + 1] = 11 # Equals sign
-        for i in range(n_samples):
+        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset"):
             num1 = self.X[i, :num_digits]
             num2 = self.X[i, num_digits + 1 : num_digits * 2 + 1]
             sum12 = np.zeros(num_digits, dtype=np.int32)
@@ -115,9 +122,10 @@ def compose(i: int, j: int, n: int) -> int:
     return r.rank()
 
 class PermutationComposition(Dataset):
-    def __init__(self, n_samples, seq_length, n=3):
-        table = np.array([[compose(i, j, n) for j in range(math.factorial(n))] for i in range(math.factorial(n))])
-        self.X = np.random.randint(0, math.factorial(n), size=(n_samples, seq_length))
+    def __init__(self, n_samples, seq_length, n=3, skewness=0):
+        vocab = math.factorial(n)
+        table = np.array([[compose(i, j, n) for j in range(vocab)] for i in range(vocab)])
+        self.X = np.random.choice(np.arange(vocab), size=(n_samples, seq_length), p=zipf_probs(vocab, skewness))
         self.Y = np.empty_like(self.X)
         for i in tqdm.tqdm(range(n_samples), desc=f"Dataset"):
             curr = 0
@@ -147,7 +155,7 @@ def collate_fn(batch):
     return X, Y
 
 
-def get_loaders(config: DictConfig):
+def get_loaders(config: DictConfig, which=("train", "val")):
     task_type = config.task.type
 
     Dataset = {
@@ -164,29 +172,36 @@ def get_loaders(config: DictConfig):
     dataset_params = inspect.signature(Dataset.__init__).parameters
     valid_keys = [k for k in dataset_params if k != 'self']
     task_args = {k: v for k, v in config.task.items() if k in valid_keys}
-    
-    train_set = Dataset(
-        n_samples=config.data.n_train_samples, 
-        seq_length=config.data.seq_length, 
-        **task_args
-    )
-    val_set = Dataset(
-        n_samples=config.data.n_val_samples,
-        seq_length=config.data.seq_length,
-        **task_args
-    )
-    
-    loader_train = DataLoader(
-        train_set, 
-        batch_size=config.train.batch_size, 
-        shuffle=True, 
-        collate_fn=collate_fn, num_workers=config.data.num_workers
-    )
-    loader_val = DataLoader(
-        val_set, 
-        batch_size=config.train.batch_size, 
-        shuffle=False, 
-        collate_fn=collate_fn, num_workers=config.data.num_workers
-    )
-    
-    return loader_train, loader_val
+
+    loaders = {}
+
+    if "train" in which:
+        train_set = Dataset(
+            n_samples=config.data.n_train_samples, 
+            seq_length=config.data.seq_length, 
+            **task_args
+        )
+        loaders["train"] = DataLoader(
+            train_set, 
+            batch_size=config.train.batch_size, 
+            shuffle=True, 
+            collate_fn=collate_fn, num_workers=config.data.num_workers
+        )
+
+    if "val" in which:
+        val_set = Dataset(
+            n_samples=config.data.n_val_samples,
+            seq_length=config.data.seq_length,
+            **task_args
+        )
+        loaders["val"] = DataLoader(
+            val_set, 
+            batch_size=config.train.batch_size, 
+            shuffle=False, 
+            collate_fn=collate_fn, num_workers=config.data.num_workers
+        )
+
+    # Return single loader if only one requested, else tuple in ("train", "val") order
+    if len(which) == 1:
+        return loaders[which[0]]
+    return tuple(loaders[w] for w in ("train", "val") if w in loaders)
