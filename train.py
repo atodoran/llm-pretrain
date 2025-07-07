@@ -11,6 +11,7 @@ import string
 import hydra
 from omegaconf import DictConfig
 import sys
+import gc
 
 from model import get_model
 from data import get_loaders
@@ -121,13 +122,10 @@ def train(
             },
         )
         run_id = run.id
-        wandb.watch(model, log="all")
+        wandb.watch(model, log="gradients", log_freq=100, log_graph=False)
     
     print("Building the dataset...")
     train_loader, val_loader = get_loaders(config)
-
-    train_losses, train_accs = [], []
-    val_losses, val_accs = [], []
 
     print("Starting training...")
     best_val_loss = float('inf')
@@ -153,19 +151,18 @@ def train(
             optimizer.step()
 
             train_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
+            predicted = outputs.detach().argmax(1)
 
-            mask = (targets != -100)
-            if mask.any():
-                train_acc += ((predicted == targets) & mask).float().sum().item() / mask.float().sum().item()
-            else:
-                train_acc += 1.0
-            num_train_batches += 1
+            with torch.no_grad():
+                mask = (targets != -100)
+                if mask.any():
+                    train_acc += (predicted.eq(targets) & mask).float().sum().item() / mask.float().sum().item()
+                else:
+                    train_acc += 1.0
+                num_train_batches += 1
 
         train_loss = train_loss / num_train_batches
         train_acc = train_acc / num_train_batches
-        train_losses.append(train_loss)
-        train_accs.append(train_acc)
 
         # Validation loop
         model.eval()
@@ -179,19 +176,17 @@ def train(
                 loss = loss_fn(outputs, targets)
 
                 val_loss += loss.item()
-                _, predicted = torch.max(outputs, 1)
+                predicted = outputs.detach().argmax(1)
 
                 mask = (targets != -100)
                 if mask.any():
-                    val_acc += ((predicted == targets) & mask).float().sum().item() / mask.float().sum().item()
+                    val_acc += (predicted.eq(targets) & mask).float().sum().item() / mask.float().sum().item()
                 else:
                     val_acc += 1.0
                 num_val_batches += 1
         
         val_loss = val_loss / num_val_batches
         val_acc = val_acc / num_val_batches
-        val_losses.append(val_loss)
-        val_accs.append(val_acc)
 
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
                 f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
@@ -210,8 +205,10 @@ def train(
 
         if save_path and val_loss < best_val_loss:
             best_val_loss = val_loss
-            save_checkpoint(model, optimizer, epoch + 1, save_path, run_id)
-    
+        
+        gc.collect()
+        torch.cuda.empty_cache()
+
     if config.train.wandb:
         wandb.finish()
 
