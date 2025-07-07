@@ -56,6 +56,7 @@ def get_latest_checkpoint(run_name_prefix):
         return None
     return max(checkpoints, key=os.path.getmtime)
 
+
 @profile
 def train(
     model,
@@ -68,7 +69,13 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=config.train.learning_rate)
+    optimizer = optim.AdamW(
+        model.parameters(),
+        lr=config.train.learning_rate,
+        betas=(config.train.beta1, config.train.beta2),
+        eps=config.train.epsilon,
+        weight_decay=config.train.weight_decay,
+    )
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     epochs = config.train.epochs
     
@@ -108,7 +115,7 @@ def train(
             resume="allow",
             name=run_name,
             config={
-                "task": config.data.task,
+                "task": config.task.name,
                 "n_train_samples": config.data.n_train_samples,
                 "n_val_samples": config.data.n_val_samples,
                 "seq_length": config.data.seq_length,
@@ -117,7 +124,11 @@ def train(
                 "dim": config.model.dim,
                 "attn_heads": config.model.attn_heads,
                 "learning_rate": config.train.learning_rate,
-                "batch_size": config.data.batch_size,
+                "weight_decay": config.train.weight_decay,
+                "beta1": config.train.beta1,
+                "beta2": config.train.beta2,
+                "epsilon": config.train.epsilon,
+                "batch_size": config.train.batch_size,
                 "num_params": num_params
             },
         )
@@ -214,7 +225,6 @@ def train(
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(config: DictConfig):
-    
     np.random.seed(config.data.seed)
     torch.manual_seed(config.data.seed)
     torch.cuda.manual_seed(config.data.seed)
@@ -224,6 +234,15 @@ def main(config: DictConfig):
 
     print("Building the model...")
     model = get_model(config)
+
+    if config.model.pretrained is not None and config.train.resume is None:
+        pretrained_path = os.path.join("models", f"{config.model.pretrained}.pth")
+        if os.path.exists(pretrained_path):
+            print(f"Loading pretrained weights from {pretrained_path}...")
+            state_dict = torch.load(pretrained_path, map_location="cpu")["model_state_dict"]
+            model.load_state_dict(state_dict, strict=False)
+        else:
+            raise ValueError(f"Pretrained weights not found at {pretrained_path}.")
 
     train(
         model=model,

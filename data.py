@@ -148,7 +148,7 @@ def collate_fn(batch):
 
 
 def get_loaders(config: DictConfig):
-    task = config.data.task
+    task_type = config.task.type
 
     Dataset = {
         "modular_addition": ModularAddition,
@@ -156,9 +156,9 @@ def get_loaders(config: DictConfig):
         "bitwise_xor": BitwiseXOR,
         "permutation_composition": PermutationComposition,
         "addition_with_carry": AdditionWithCarry
-    }.get(task)
+    }.get(task_type)
     if Dataset is None:
-        raise ValueError(f"Unknown task: {task}")
+        raise ValueError(f"Unknown task type: {task_type}")
 
     # Filter out dataset parameters that are not in the Dataset class
     dataset_params = inspect.signature(Dataset.__init__).parameters
@@ -178,13 +178,13 @@ def get_loaders(config: DictConfig):
     
     loader_train = DataLoader(
         train_set, 
-        batch_size=config.data.batch_size, 
+        batch_size=config.train.batch_size, 
         shuffle=True, 
         collate_fn=collate_fn, num_workers=config.data.num_workers
     )
     loader_val = DataLoader(
         val_set, 
-        batch_size=config.data.batch_size, 
+        batch_size=config.train.batch_size, 
         shuffle=False, 
         collate_fn=collate_fn, num_workers=config.data.num_workers
     )
