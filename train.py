@@ -12,10 +12,15 @@ import hydra
 from omegaconf import DictConfig
 import sys
 import gc
+import signal
 
 from model import get_model
 from data import get_loaders
 from utils import get_run_name_base
+
+def cleanup(signum, frame):
+    wandb.finish()
+    sys.exit(0)
 
 try:
     profile
@@ -216,6 +221,7 @@ def train(
 
         if save_path and val_loss < best_val_loss:
             best_val_loss = val_loss
+            save_checkpoint(model, optimizer, epoch + 1, save_path, run_id)
         
         gc.collect()
         torch.cuda.empty_cache()
@@ -225,6 +231,8 @@ def train(
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(config: DictConfig):
+    signal.signal(signal.SIGTERM, cleanup)
+    
     np.random.seed(config.data.seed)
     torch.manual_seed(config.data.seed)
     torch.cuda.manual_seed(config.data.seed)
