@@ -70,7 +70,7 @@ def main():
             ax.set_yticks([])
     plt.tight_layout()
     fig.colorbar(im, ax=axes, orientation='vertical', fraction=0.02, pad=0.01)
-    plt.savefig("attention_maps.png")
+    plt.savefig("plots/attention_maps.png")
     plt.close(fig)
 
 if __name__ == "__main__":

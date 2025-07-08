@@ -15,7 +15,7 @@ def zipf_probs(vocab, skewness=0):
 
 
 class ModularAddition(Dataset):
-    def __init__(self, n_samples, seq_length, modulo=2, skewness=0):
+    def __init__(self, n_samples, seq_length, use_tqdm=True, modulo=2, skewness=0):
         self.X = np.random.choice(np.arange(modulo), size=(n_samples, seq_length), p=zipf_probs(modulo, skewness))
         self.Y = np.cumsum(self.X, axis=1) % modulo
         self.n_samples = n_samples
@@ -30,18 +30,21 @@ class ModularAddition(Dataset):
 
 
 class InContextRecall(Dataset):
-    def __init__(self, n_samples, seq_length, num_keys=8, num_values=8):
+    def __init__(self, n_samples, seq_length, use_tqdm=True, num_keys=8, num_values=8):
         assert seq_length % 2 == 0, "Sequence length must be even for in-context recall."
         value_of_key = np.random.randint(0, num_values, size=(n_samples, num_keys), dtype=np.int32)
 
         keys = np.random.randint(0, num_keys, size=(n_samples, seq_length // 2), dtype=np.int32)
         values = np.empty((n_samples, seq_length // 2), dtype=np.int32)
-        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset, step 1/2"):
+        use_tqdm = getattr(self, "tqdm", False)
+        iterator = tqdm.tqdm(range(n_samples), desc="Dataset, step 1/2") if use_tqdm else range(n_samples)
+        for i in iterator:
             for j in range(seq_length // 2):
                 values[i, j] = value_of_key[i, keys[i, j]]
-        
+
         values_masked = values.copy()
-        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset, step 2/2"):
+        iterator = tqdm.tqdm(range(n_samples), desc="Dataset, step 2/2") if use_tqdm else range(n_samples)
+        for i in iterator:
             seen_keys = set()
             for j in range(seq_length // 2):
                 if keys[i, j] not in seen_keys:
@@ -70,7 +73,7 @@ class InContextRecall(Dataset):
 
 
 class BitwiseXOR(Dataset):
-    def __init__(self, n_samples, seq_length, max_num=16, skewness=0):
+    def __init__(self, n_samples, seq_length, use_tqdm=True, max_num=16, skewness=0):
         self.X = np.random.choice(np.arange(max_num), size=(n_samples, seq_length), p=zipf_probs(max_num, skewness))
         self.Y = np.bitwise_xor.accumulate(self.X, axis=1)
         self.n_samples = n_samples
@@ -85,13 +88,14 @@ class BitwiseXOR(Dataset):
 
 
 class AdditionWithCarry(Dataset):
-    def __init__(self, n_samples, seq_length):
+    def __init__(self, n_samples, seq_length, use_tqdm=True):
         assert (seq_length - 2) % 3 == 0, "Sequence length must be 3k+2 for addition with carry."
         num_digits = (seq_length - 2) // 3
         self.X = np.random.randint(0, 10, size=(n_samples, seq_length), dtype=np.int32)
         self.X[:, num_digits] = 10 # Addition sign
         self.X[:, num_digits * 2 + 1] = 11 # Equals sign
-        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset"):
+        iterator = tqdm.tqdm(range(n_samples), desc="Dataset") if use_tqdm else range(n_samples)
+        for i in iterator:
             num1 = self.X[i, :num_digits]
             num2 = self.X[i, num_digits + 1 : num_digits * 2 + 1]
             sum12 = np.zeros(num_digits, dtype=np.int32)
@@ -122,12 +126,13 @@ def compose(i: int, j: int, n: int) -> int:
     return r.rank()
 
 class PermutationComposition(Dataset):
-    def __init__(self, n_samples, seq_length, n=3, skewness=0):
+    def __init__(self, n_samples, seq_length, use_tqdm=True, n=3, skewness=0):
         vocab = math.factorial(n)
         table = np.array([[compose(i, j, n) for j in range(vocab)] for i in range(vocab)])
         self.X = np.random.choice(np.arange(vocab), size=(n_samples, seq_length), p=zipf_probs(vocab, skewness))
         self.Y = np.empty_like(self.X)
-        for i in tqdm.tqdm(range(n_samples), desc=f"Dataset"):
+        iterator = tqdm.tqdm(range(n_samples), desc="Dataset") if use_tqdm else range(n_samples)
+        for i in iterator:
             curr = 0
             for j in range(seq_length):
                 curr = table[curr, self.X[i,j]]
@@ -179,6 +184,7 @@ def get_loaders(config: DictConfig, which=("train", "val")):
         train_set = Dataset(
             n_samples=config.data.n_train_samples, 
             seq_length=config.data.seq_length, 
+            use_tqdm=config.data.use_tqdm,
             **task_args
         )
         loaders["train"] = DataLoader(
@@ -192,6 +198,7 @@ def get_loaders(config: DictConfig, which=("train", "val")):
         val_set = Dataset(
             n_samples=config.data.n_val_samples,
             seq_length=config.data.seq_length,
+            use_tqdm=config.data.use_tqdm,
             **task_args
         )
         loaders["val"] = DataLoader(
