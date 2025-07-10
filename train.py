@@ -134,7 +134,8 @@ def train(
                 "beta2": config.train.beta2,
                 "epsilon": config.train.epsilon,
                 "batch_size": config.train.batch_size,
-                "num_params": num_params
+                "num_params": num_params,
+                "pretrained": config.model.pretrained
             },
         )
         run_id = run.id

@@ -1,161 +1,150 @@
+import os
 import numpy as np
 import torch
-import torch.nn.functional as F
-from contextlib import contextmanager
 from tqdm import tqdm
-import os
 import hydra
 from omegaconf import DictConfig
+import matplotlib.pyplot as plt
 
 from model import get_model
 from data import get_loaders
 
-def prefix_patch(
-    model,
-    config: DictConfig,
-):
+def prefix_patch(model, config: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
 
-    # ------`---------------------------------------------------------------
-    # 0.  Helpers ----------------------------------------------------------
-    # ------`---------------------------------------------------------------
+    val_loader = get_loaders(config, which=("val",))
 
+    seq_len = config.data.seq_length
+    num_layers = config.model.depth
+    prefix_positions = list(range(seq_len + 1))
+
+    # Helper to hook modules
+    from contextlib import contextmanager
     @contextmanager
     def layer_hook(module, fn):
-        """Register a forward hook, automatically remove it afterwards."""
-        handle = module.register_forward_hook(fn, prepend=False)
+        handle = module.register_forward_hook(fn)
         try:
             yield
         finally:
             handle.remove()
 
     def ld(logits, y_clean, y_corrupt):
-        """Logit-difference (scalar, batch size 1 for simplicity)."""
-        # logits: [1, vocab]
-        return (logits[0, y_clean] - logits[0, y_corrupt]).item()
+        # difference in logit scores
+        return (logits[..., y_clean] - logits[..., y_corrupt])
 
     def nld(ld_patched, ld_corrupt, ld_clean):
-        """Normalized-Logit-Difference."""
         return (ld_patched - ld_corrupt) / (ld_clean - ld_corrupt + 1e-9)
-    
-    seq_len = config.data.seq_length
 
-    import matplotlib.pyplot as plt
-
-    num_layers = config.model.depth
-    prefix_positions = list(range(10, seq_len + 1, 10))
+    # Table to store median NLDs
     nld_table = np.zeros((num_layers, len(prefix_positions)))
 
     for layer_idx in range(num_layers):
-        for pos_idx, PREFIX_LEN in enumerate(prefix_positions):
-            val_loader = get_loaders(config, which=("val",))
-            ff_pn = model.attn_layers.layers[layer_idx][1]
+        # pick the residual wrapper for this layer
+        block_res = model.attn_layers.layers[layer_idx][2]
 
+        for pos_idx, prefix_len in enumerate(prefix_positions):
+            scores = []
             with torch.no_grad():
-                total_score = 0
-                num_batches = 0
-
-                for clean_inputs, targets in val_loader:
-                    batch_size = clean_inputs.size(0)
-
+                for clean_inputs, _ in val_loader:
+                    clean_inputs = clean_inputs.to(device)
+                    # corrupt first token
                     corrupt_inputs = clean_inputs.clone()
-                    for i in range(batch_size):
-                        orig_token = clean_inputs[i, 0].item()
-                        candidates = (clean_inputs[i, 1:] != orig_token).nonzero(as_tuple=True)[0]
-                        if len(candidates) > 0:
-                            rand_idx = np.random.choice(candidates.cpu().numpy())
-                            new_token = clean_inputs[i, rand_idx + 1].item()
-                            corrupt_inputs[i, 0] = new_token
+                    for i in range(clean_inputs.size(0)):
+                        orig = clean_inputs[i, 0].item()
+                        cands = (clean_inputs[i, 1:] != orig).nonzero(as_tuple=True)[0]
+                        if cands.numel():
+                            j = np.random.choice(cands.cpu().numpy())
+                            corrupt_inputs[i, 0] = clean_inputs[i, j + 1]
 
+                    # save post-residual for clean
                     clean_cache = {}
+                    def save_post(module, inp, out):
+                        clean_cache['post'] = out.detach().clone()
 
-                    def save_post_residual(_, __, out):
-                        if isinstance(out, tuple):
-                            out = out[0]
-                        clean_cache["post"] = out.detach().clone()
-
-                    with layer_hook(ff_pn, save_post_residual):
+                    with layer_hook(block_res, save_post):
                         logits_clean = model(clean_inputs)
 
+                    # baseline corrupt
                     logits_corrupt = model(corrupt_inputs)
 
-                    y_clean   = logits_clean.argmax(dim=-1)[:, -1]
+                    # predictions
+                    y_clean = logits_clean.argmax(dim=-1)[:, -1]
                     y_corrupt = logits_corrupt.argmax(dim=-1)[:, -1]
+                    idx = torch.arange(clean_inputs.size(0), device=device)
 
-                    ld_clean = []
-                    ld_corrupt = []
-                    for i in range(batch_size):
-                        ld_clean.append(ld(logits_clean[i, -1].unsqueeze(0), y_clean[i].item(), y_corrupt[i].item()))
-                        ld_corrupt.append(ld(logits_corrupt[i, -1].unsqueeze(0), y_clean[i].item(), y_corrupt[i].item()))
-                    ld_clean = torch.tensor(ld_clean, device=device)
-                    ld_corrupt = torch.tensor(ld_corrupt, device=device)
+                    # compute ld for clean and corrupt
+                    ld_clean = ld(logits_clean[idx, -1], y_clean, y_corrupt)
+                    ld_corrupt = ld(logits_corrupt[idx, -1], y_clean, y_corrupt)
 
-                    def patch_post_residual(_, __, out):
-                        is_tuple = isinstance(out, tuple)
-                        x        = out[0] if is_tuple else out
-                        x = x.clone()
-                        x[:, :PREFIX_LEN, :] = clean_cache["post"][:, :PREFIX_LEN, :]
-                        return (x, *out[1:]) if is_tuple else x
+                    # patch residual for corrupt
+                    def patch_post(module, inp, out):
+                        patched = out.clone()
+                        patched[:, :prefix_len, :] = clean_cache['post'][:, :prefix_len, :]
+                        return patched
 
-                    with layer_hook(ff_pn, patch_post_residual):
+                    with layer_hook(block_res, patch_post):
                         logits_patched = model(corrupt_inputs)
 
-                    ld_patched = []
-                    for i in range(batch_size):
-                        ld_patched.append(ld(logits_patched[i, -1].unsqueeze(0), y_clean[i].item(), y_corrupt[i].item()))
-                    ld_patched = torch.tensor(ld_patched, device=device)
+                    ld_patched = ld(logits_patched[idx, -1], y_clean, y_corrupt)
 
-                    score = nld(ld_patched, ld_corrupt, ld_clean)
-                    total_score += score.sum().item()
+                    # filter valid
+                    mask = (y_clean != y_corrupt) & ((ld_clean - ld_corrupt).abs() > 1e-6)
+                    if mask.any():
+                        batch_nld = nld(ld_patched[mask], ld_corrupt[mask], ld_clean[mask])
+                        scores.append(batch_nld.cpu())
 
-            avg_nld = total_score / config.data.n_val_samples
-            nld_table[layer_idx, pos_idx] = avg_nld
-            print(f"Avg NLD for layer {layer_idx}, prefix {PREFIX_LEN}: {avg_nld:.3f}")
+            if scores:
+                all_scores = torch.cat(scores)
+                median_nld = float(torch.median(all_scores))
+                mean_nld = float(torch.mean(all_scores))
+            else:
+                median_nld, mean_nld = float('nan')
+            nld_table[layer_idx, pos_idx] = mean_nld
+            print(f"Layer {layer_idx}, prefix {prefix_len}: mean NLD = {median_nld:.3f}")
 
-    # Print table
-    print("\nNLD Table (layers x prefix positions):")
-    print("      " + " ".join([f"{p:>6}" for p in prefix_positions]))
+    # print table
+    print("NLD Table:")
+    header = "      " + " ".join(f"{p:>6}" for p in prefix_positions)
+    print(header)
     for i, row in enumerate(nld_table):
-        print(f"Layer {i:<2} " + " ".join([f"{v:6.3f}" for v in row]))
+        print(f"L{i:<2} " + " ".join(f"{v:6.3f}" for v in row))
 
-    # Plot heatmap
-    plt.figure(figsize=(12, 6))
+    # plot
+    os.makedirs("plots", exist_ok=True)
+    plt.figure(figsize=(12,6))
     plt.imshow(nld_table, aspect='auto', cmap='viridis')
-    plt.colorbar(label='Avg NLD')
-    plt.xlabel('Prefix Position')
+    plt.colorbar(label='Mean NLD')
+    plt.xlabel('Prefix')
     plt.ylabel('Layer')
-    plt.xticks(ticks=np.arange(len(prefix_positions)), labels=prefix_positions, rotation=45)
-    plt.yticks(ticks=np.arange(num_layers), labels=[f"{i}" for i in range(num_layers)])
-    plt.title('NLD Heatmap (Layer x Prefix Position)')
+    plt.xticks(np.arange(len(prefix_positions)), prefix_positions, rotation=45)
+    plt.yticks(np.arange(num_layers), list(range(num_layers)))
+    plt.title('Prefix Patching NLD Heatmap')
     plt.tight_layout()
-    plt.savefig("plots/prefix_patch.png")
+    plt.savefig('plots/prefix_patch.png')
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(config: DictConfig):
     np.random.seed(config.data.seed)
     torch.manual_seed(config.data.seed)
-    torch.cuda.manual_seed(config.data.seed)
+    torch.cuda.manual_seed_all(config.data.seed)
 
-    print("Building the model...")
+    print("Building model...")
     model = get_model(config)
 
-    if config.model.pretrained is not None:
-        pretrained_path = os.path.join("models", f"{config.model.pretrained}.pth")
-        if os.path.exists(pretrained_path):
-            print(f"Loading pretrained weights from {pretrained_path}...")
-            state_dict = torch.load(pretrained_path, map_location="cpu")["model_state_dict"]
-            model.load_state_dict(state_dict, strict=False)
+    if config.model.pretrained:
+        path = os.path.join("models", f"{config.model.pretrained}.pth")
+        if os.path.exists(path):
+            print(f"Loading weights from {path}...")
+            sd = torch.load(path, map_location="cpu")["model_state_dict"]
+            model.load_state_dict(sd, strict=False)
         else:
-            raise ValueError(f"Pretrained weights not found at {pretrained_path}.")
+            raise FileNotFoundError(f"No pretrained file at {path}")
     else:
-        print("Warning: No pretrained path selected. Proceeding without loading pretrained weights.")
+        print("No pretrained weights specified; training from scratch.")
 
-    prefix_patch(
-        model=model,
-        config=config,
-    )
+    prefix_patch(model, config)
 
 if __name__ == "__main__":
     main()
