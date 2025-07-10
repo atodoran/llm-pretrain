@@ -9,120 +9,178 @@ import matplotlib.pyplot as plt
 from model import get_model
 from data import get_loaders
 
+import torch.nn as nn
+import torch
+
+def _unwrap_norm(norm):
+    """
+    If norm is a nested ModuleList (or list/tuple) wrapping one LayerNorm,
+    dig down until you hit a real nn.Module or None.
+    """
+    if norm is None:
+        return None
+    if isinstance(norm, (nn.ModuleList, list, tuple)):
+        return _unwrap_norm(norm[0]) if len(norm) > 0 else None
+    return norm  # real nn.Module
+
+def apply_block(block_spec: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
+    """
+    block_spec = ModuleList([ norms, layer_module, residual_fn ])
+      norms          = ModuleList([ pre_norm, post_branch_norm, post_main_norm ])
+      layer_module   = Attention or FeedForward
+      residual_fn    = Residual()
+    """
+    norms, layer_module, residual_fn = block_spec
+
+    # grab the three norms (some may be None, and some may be wrapped in a ModuleList)
+    pre_norm         = _unwrap_norm(norms[0])
+    post_branch_norm = _unwrap_norm(norms[1])
+    post_main_norm   = _unwrap_norm(norms[2])
+
+    # prepare residual
+    resid_input, inner_res, resid_kwargs = residual_fn.prepare(x)
+
+    # pre-norm branch
+    branch_in = pre_norm(x) if pre_norm is not None else x
+    out       = layer_module(branch_in)
+
+    # post-branch norm (sandwich-norm style)
+    if post_branch_norm is not None:
+        out = post_branch_norm(out)
+
+    # add residual
+    x2 = residual_fn(out, inner_res, **resid_kwargs)
+
+    # final main norm
+    if post_main_norm is not None:
+        x2 = post_main_norm(x2)
+
+    return x2
+
+def run_up_to_layer(model, token_ids: torch.LongTensor, layer_idx: int) -> torch.Tensor:
+    # embeddings
+    tok    = model.token_emb(token_ids)
+    pos    = model.pos_emb(token_ids)
+    hidden = tok + pos
+    hidden = model.post_emb_norm(hidden)
+    hidden = model.emb_dropout(hidden)
+    hidden = model.project_emb(hidden)
+
+    # apply each block
+    for i, block_spec in enumerate(model.attn_layers.layers):
+        hidden = apply_block(block_spec, hidden)
+        if i == layer_idx:
+            return hidden.clone()
+
+    raise IndexError(f"layer_idx {layer_idx} >= depth {len(model.attn_layers.layers)}")
+
+def run_from_layer(model, hidden: torch.Tensor, layer_idx: int) -> torch.Tensor:
+    # finish the remaining blocks
+    for i, block_spec in enumerate(model.attn_layers.layers):
+        if i <= layer_idx:
+            continue
+        hidden = apply_block(block_spec, hidden)
+
+    return model.to_logits(hidden)
+
 def prefix_patch(model, config: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
 
     val_loader = get_loaders(config, which=("val",))
+    seq_len    = config.data.seq_length
+    n_layers   = len(model.attn_layers.layers) # config.model.depth
+    prefixes   = list(range(seq_len + 1))
 
-    seq_len = config.data.seq_length
-    num_layers = config.model.depth
-    prefix_positions = list(range(seq_len + 1))
+    def ld(logits, y_true, y_alt):
+        return logits[..., y_true] - logits[..., y_alt]
 
-    # Helper to hook modules
-    from contextlib import contextmanager
-    @contextmanager
-    def layer_hook(module, fn):
-        handle = module.register_forward_hook(fn)
-        try:
-            yield
-        finally:
-            handle.remove()
+    def nld(ld_p, ld_cor, ld_c):
+        return (ld_p - ld_cor) / (ld_c - ld_cor + 1e-9)
 
-    def ld(logits, y_clean, y_corrupt):
-        # difference in logit scores
-        return (logits[..., y_clean] - logits[..., y_corrupt])
+    # mean NLD table
+    nld_table = np.zeros((n_layers, len(prefixes)))
 
-    def nld(ld_patched, ld_corrupt, ld_clean):
-        return (ld_patched - ld_corrupt) / (ld_clean - ld_corrupt + 1e-9)
+    for L in range(n_layers):
+        print(f"---- Layer {L} ----")
+        for pi, P in enumerate(prefixes):
+            all_batch_nlds = []
 
-    # Table to store median NLDs
-    nld_table = np.zeros((num_layers, len(prefix_positions)))
-
-    for layer_idx in range(num_layers):
-        # pick the residual wrapper for this layer
-        block_res = model.attn_layers.layers[layer_idx][2]
-
-        for pos_idx, prefix_len in enumerate(prefix_positions):
-            scores = []
             with torch.no_grad():
-                for clean_inputs, _ in val_loader:
-                    clean_inputs = clean_inputs.to(device)
-                    # corrupt first token
-                    corrupt_inputs = clean_inputs.clone()
-                    for i in range(clean_inputs.size(0)):
-                        orig = clean_inputs[i, 0].item()
-                        cands = (clean_inputs[i, 1:] != orig).nonzero(as_tuple=True)[0]
+                for clean_ids, _ in val_loader:
+                    clean_ids = clean_ids.to(device)          # [B,T]
+                    B, T      = clean_ids.shape
+
+                    # make corrupted batch
+                    corrupt_ids = clean_ids.clone()
+                    for i in range(B):
+                        orig = clean_ids[i,0].item()
+                        cands = (clean_ids[i,1:] != orig).nonzero(as_tuple=True)[0]
                         if cands.numel():
                             j = np.random.choice(cands.cpu().numpy())
-                            corrupt_inputs[i, 0] = clean_inputs[i, j + 1]
+                            corrupt_ids[i,0] = clean_ids[i,j+1]
 
-                    # save post-residual for clean
-                    clean_cache = {}
-                    def save_post(module, inp, out):
-                        clean_cache['post'] = out.detach().clone()
+                    # 1) clean run up to and after layer L
+                    post_clean    = run_up_to_layer(model, clean_ids, L)
+                    logits_clean  = run_from_layer(model, post_clean, L)
 
-                    with layer_hook(block_res, save_post):
-                        logits_clean = model(clean_inputs)
+                    # 2) corrupt baseline
+                    post_corr     = run_up_to_layer(model, corrupt_ids, L)
+                    logits_corr   = run_from_layer(model, post_corr, L)
 
-                    # baseline corrupt
-                    logits_corrupt = model(corrupt_inputs)
+                    # 3) patched: splice in the first P tokens of clean's post
+                    post_patched = post_corr.clone()
+                    post_patched[:, :P, :] = post_clean[:, :P, :]
+                    logits_pat  = run_from_layer(model, post_patched, L)
 
-                    # predictions
-                    y_clean = logits_clean.argmax(dim=-1)[:, -1]
-                    y_corrupt = logits_corrupt.argmax(dim=-1)[:, -1]
-                    idx = torch.arange(clean_inputs.size(0), device=device)
+                    # pick predictions
+                    y_clean  = logits_clean.argmax(dim=-1)[:, -1]
+                    y_corr   = logits_corr.argmax(dim=-1)[:, -1]
+                    idxs     = torch.arange(B, device=device)
 
-                    # compute ld for clean and corrupt
-                    ld_clean = ld(logits_clean[idx, -1], y_clean, y_corrupt)
-                    ld_corrupt = ld(logits_corrupt[idx, -1], y_clean, y_corrupt)
+                    ld_c = ld(logits_clean[idxs, -1], y_clean, y_corr)
+                    ld_k = ld(logits_corr[idxs, -1], y_clean, y_corr)
+                    ld_p = ld(logits_pat[idxs, -1], y_clean, y_corr)
 
-                    # patch residual for corrupt
-                    def patch_post(module, inp, out):
-                        patched = out.clone()
-                        patched[:, :prefix_len, :] = clean_cache['post'][:, :prefix_len, :]
-                        return patched
+                    # mask trivial cases
+                    valid = (y_clean != y_corr) & ((ld_c - ld_k).abs() > 1e-6)
+                    if valid.any():
+                        batch_nld = nld(ld_p[valid], ld_k[valid], ld_c[valid])
+                        all_batch_nlds.append(batch_nld.cpu())
 
-                    with layer_hook(block_res, patch_post):
-                        logits_patched = model(corrupt_inputs)
-
-                    ld_patched = ld(logits_patched[idx, -1], y_clean, y_corrupt)
-
-                    # filter valid
-                    mask = (y_clean != y_corrupt) & ((ld_clean - ld_corrupt).abs() > 1e-6)
-                    if mask.any():
-                        batch_nld = nld(ld_patched[mask], ld_corrupt[mask], ld_clean[mask])
-                        scores.append(batch_nld.cpu())
-
-            if scores:
-                all_scores = torch.cat(scores)
-                median_nld = float(torch.median(all_scores))
-                mean_nld = float(torch.mean(all_scores))
+            if all_batch_nlds:
+                all_nlds     = torch.cat(all_batch_nlds)
+                median_nld   = float(all_nlds.median())
             else:
-                median_nld, mean_nld = float('nan')
-            nld_table[layer_idx, pos_idx] = mean_nld
-            print(f"Layer {layer_idx}, prefix {prefix_len}: mean NLD = {median_nld:.3f}")
+                mean_nld   = median_nld = float('nan')
+
+            nld_table[L, pi] = median_nld
+            print(f"  prefix={P:2d}  →  median NLD={median_nld:.3f}")
 
     # print table
-    print("NLD Table:")
-    header = "      " + " ".join(f"{p:>6}" for p in prefix_positions)
+    print("\nMean NLD table (layers × prefixes):")
+    header = "     " + " ".join(f"{p:>6}" for p in prefixes)
     print(header)
-    for i, row in enumerate(nld_table):
-        print(f"L{i:<2} " + " ".join(f"{v:6.3f}" for v in row))
+    for l, row in enumerate(nld_table):
+        print("L{:<2} ".format(l) + " ".join(f"{v:6.3f}" for v in row))
 
-    # plot
+    # heatmap
     os.makedirs("plots", exist_ok=True)
     plt.figure(figsize=(12,6))
     plt.imshow(nld_table, aspect='auto', cmap='viridis')
-    plt.colorbar(label='Mean NLD')
-    plt.xlabel('Prefix')
-    plt.ylabel('Layer')
-    plt.xticks(np.arange(len(prefix_positions)), prefix_positions, rotation=45)
-    plt.yticks(np.arange(num_layers), list(range(num_layers)))
-    plt.title('Prefix Patching NLD Heatmap')
+    plt.colorbar(label='Median NLD')
+    plt.xlabel('Prefix length')
+    plt.ylabel('Layer index')
+    n_ticks = 10
+    tick_positions = np.linspace(0, len(prefixes)-1, n_ticks, dtype=int)
+    tick_labels = [prefixes[i] for i in tick_positions]
+    plt.xticks(tick_positions, tick_labels, rotation=45)
+    plt.yticks(np.arange(n_layers), np.arange(n_layers))
+    plt.title('Prefix-Patching NLD Heatmap')
     plt.tight_layout()
     plt.savefig('plots/prefix_patch.png')
+    print("Saved plot to plots/prefix_patch.png")
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(config: DictConfig):
@@ -135,14 +193,8 @@ def main(config: DictConfig):
 
     if config.model.pretrained:
         path = os.path.join("models", f"{config.model.pretrained}.pth")
-        if os.path.exists(path):
-            print(f"Loading weights from {path}...")
-            sd = torch.load(path, map_location="cpu")["model_state_dict"]
-            model.load_state_dict(sd, strict=False)
-        else:
-            raise FileNotFoundError(f"No pretrained file at {path}")
-    else:
-        print("No pretrained weights specified; training from scratch.")
+        sd   = torch.load(path, map_location="cpu")["model_state_dict"]
+        model.load_state_dict(sd, strict=False)
 
     prefix_patch(model, config)
 
