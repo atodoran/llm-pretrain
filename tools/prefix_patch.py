@@ -37,9 +37,6 @@ def apply_block(block_spec: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
     post_branch_norm = _unwrap_norm(norms[1])
     post_main_norm   = _unwrap_norm(norms[2])
 
-    # prepare residual
-    resid_input, inner_res, resid_kwargs = residual_fn.prepare(x)
-
     # pre-norm branch
     branch_in = pre_norm(x) if pre_norm is not None else x
     out       = layer_module(branch_in)
@@ -49,7 +46,7 @@ def apply_block(block_spec: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
         out = post_branch_norm(out)
 
     # add residual
-    x2 = residual_fn(out, inner_res, **resid_kwargs)
+    x2 = x + out
 
     # final main norm
     if post_main_norm is not None:
@@ -60,7 +57,7 @@ def apply_block(block_spec: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
 def run_up_to_layer(model, token_ids: torch.LongTensor, layer_idx: int) -> torch.Tensor:
     # embeddings
     tok    = model.token_emb(token_ids)
-    pos    = model.pos_emb(token_ids)
+    pos    = model.pos_emb(tok)
     hidden = tok + pos
     hidden = model.post_emb_norm(hidden)
     hidden = model.emb_dropout(hidden)
@@ -90,36 +87,36 @@ def prefix_patch(model, config: DictConfig):
 
     val_loader = get_loaders(config, which=("val",))
     seq_len    = config.data.seq_length
-    n_layers   = len(model.attn_layers.layers) # config.model.depth
+    n_layers   = config.model.depth
     prefixes   = list(range(seq_len + 1))
 
     def ld(logits, y_true, y_alt):
-        return logits[..., y_true] - logits[..., y_alt]
+        return (logits.gather(1, y_true.unsqueeze(1)).squeeze(1)
+              - logits.gather(1, y_alt.unsqueeze(1)).squeeze(1))
 
     def nld(ld_p, ld_cor, ld_c):
         return (ld_p - ld_cor) / (ld_c - ld_cor + 1e-9)
 
-    # mean NLD table
     nld_table = np.zeros((n_layers, len(prefixes)))
 
-    for L in range(n_layers):
-        print(f"---- Layer {L} ----")
+    for li, L in enumerate(range(1, n_layers * 2, 2)):
+        print(f"---- Layer {li + 1} ----")
         for pi, P in enumerate(prefixes):
             all_batch_nlds = []
 
             with torch.no_grad():
                 for clean_ids, _ in val_loader:
-                    clean_ids = clean_ids.to(device)          # [B,T]
-                    B, T      = clean_ids.shape
+                    clean_ids = clean_ids.to(device)
+                    B = clean_ids.size(0)
 
                     # make corrupted batch
                     corrupt_ids = clean_ids.clone()
                     for i in range(B):
-                        orig = clean_ids[i,0].item()
-                        cands = (clean_ids[i,1:] != orig).nonzero(as_tuple=True)[0]
+                        orig = clean_ids[i, 0].item()
+                        cands = (clean_ids[i, 1:] != orig).nonzero(as_tuple=True)[0]
                         if cands.numel():
                             j = np.random.choice(cands.cpu().numpy())
-                            corrupt_ids[i,0] = clean_ids[i,j+1]
+                            corrupt_ids[i, 0] = clean_ids[i, j+1]
 
                     # 1) clean run up to and after layer L
                     post_clean    = run_up_to_layer(model, clean_ids, L)
@@ -150,13 +147,13 @@ def prefix_patch(model, config: DictConfig):
                         all_batch_nlds.append(batch_nld.cpu())
 
             if all_batch_nlds:
-                all_nlds     = torch.cat(all_batch_nlds)
-                median_nld   = float(all_nlds.median())
+                all_nlds = torch.cat(all_batch_nlds)
+                median_nld = float(all_nlds.median())
             else:
-                mean_nld   = median_nld = float('nan')
+                median_nld = float('nan')
 
-            nld_table[L, pi] = median_nld
-            print(f"  prefix={P:2d}  →  median NLD={median_nld:.3f}")
+            nld_table[li, pi] = median_nld
+            print(f"  ({li + 1},{P}) median NLD: {median_nld:.3f}")
 
     # print table
     print("\nMean NLD table (layers × prefixes):")
@@ -179,8 +176,13 @@ def prefix_patch(model, config: DictConfig):
     plt.yticks(np.arange(n_layers), np.arange(n_layers))
     plt.title('Prefix-Patching NLD Heatmap')
     plt.tight_layout()
-    plt.savefig('plots/prefix_patch.png')
-    print("Saved plot to plots/prefix_patch.png")
+
+    # save plot
+    plot_name = config.model.pretrained
+    plot_name = plot_name.rsplit('/', 1)[-1]
+    plot_name = "prefix_patch_" + plot_name
+    plt.savefig(f"plots/{plot_name}.png")
+    print(f"plots/{plot_name}.png")
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(config: DictConfig):
