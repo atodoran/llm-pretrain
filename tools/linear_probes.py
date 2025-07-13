@@ -1,17 +1,18 @@
 import sys
 sys.path.append('./')
 
-import argparse
+import os
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 from sklearn.linear_model import LogisticRegression
 from x_transformers import TransformerWrapper
 from model import get_model
 from data import PermutationComposition, collate_fn
 from torch.utils.data import DataLoader
-from config import ModelConfig, load_yml
 import hydra
 from omegaconf import DictConfig
+from functools import partial
 
 
 def default_identity_state(batch_inputs, batch_targets):
@@ -20,6 +21,25 @@ def default_identity_state(batch_inputs, batch_targets):
     Returns a NumPy array of shape (batch_size, seq_len).
     """
     return batch_targets.cpu().numpy()
+
+def permutation_parity_state(batch_inputs, batch_targets, n=3):
+    """
+    Extracts the parity (even=0, odd=1) of each permutation token in batch_inputs.
+    batch_inputs: Tensor of shape (batch_size, seq_len), each entry is a permutation rank.
+    n: size of the permutation (should match the 'n' used in PermutationComposition)
+    Returns: np.ndarray of shape (batch_size, seq_len) with parity values.
+    """
+    from sympy.combinatorics.permutations import Permutation
+
+    batch_inputs_np = batch_inputs.cpu().numpy()
+    batch_size, seq_len = batch_inputs_np.shape
+    parity_array = np.zeros_like(batch_inputs_np)
+    for i in range(batch_size):
+        for j in range(seq_len):
+            rank = batch_inputs_np[i, j]
+            perm = Permutation.unrank_lex(n, rank)
+            parity_array[i, j] = perm.parity()
+    return parity_array
 
 
 class StateExtractor:
@@ -54,6 +74,8 @@ class RepresentationExtractor:
         res_stream = post_states[1::2]  # take only post-residual states
         assert len(res_stream) == self.depth
         
+        # print(logits.shape, res_stream[0].shape)
+
         # convert to NumPy
         return [h.detach().cpu().numpy() for h in res_stream]
 
@@ -116,48 +138,67 @@ class ProbeTrainer:
         for idx, activation in reps.items():
             N, L, D = activation.shape
             X = activation.reshape(N * L, D)
-            clf = LogisticRegression(max_iter=200, n_jobs=-1)
+            clf = LogisticRegression(max_iter=1000, n_jobs=-1)
             clf.fit(X, flat_y)
             results[idx] = clf.score(X, flat_y)
         return results
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
-def main(cfg: DictConfig):
+def main(config: DictConfig):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Build model from config
-    model = get_model(cfg).to(device)
+    model = get_model(config).to(device)
     
     # Load checkpoint
-    assert cfg.probe.checkpoint is not None, "Please specify probe.checkpoint in your config or CLI."
-    ckpt = torch.load(cfg.probe.checkpoint, map_location=device)
+    assert config.probe.checkpoint is not None, "Please specify probe.checkpoint in your config or CLI."
+    ckpt = torch.load(config.probe.checkpoint, map_location=device)
     sd = ckpt.get('model_state_dict', ckpt)
     model.load_state_dict(sd)
 
     # prepare dataset & loader
     dataset = PermutationComposition(
-        n_samples=100,
-        seq_length=cfg.model.max_seq_len,
+        n_samples=config.probe.n_samples,
+        seq_length=config.model.max_seq_len,
         n=3
     )
     loader = DataLoader(
         dataset,
-        batch_size=cfg.data.batch_size,
+        batch_size=config.train.batch_size,
         shuffle=False,
         collate_fn=collate_fn
     )
 
     # set up probes
     repr_ext = RepresentationExtractor(model)
-    state_ext = StateExtractor()
+    state_ext = StateExtractor(state_fn=partial(permutation_parity_state, n=config.task.n) if config.probe.state == 'parity' else default_identity_state)
     trainer = ProbeTrainer(model, loader, state_ext, repr_ext, device)
 
     # train and print
     results = trainer.train_probes()
-    print("Probe results (layer_idx: accuracy):")
+    print(f"Probe results for {config.probe.state} state (layer_idx: accuracy):")
     for idx in sorted(results):
         print(f"  Layer {idx:2d}: {results[idx]:.4f}")
+
+    results = trainer.train_probes()
+    print(f"Probe results for {config.probe.state} state (layer_idx: accuracy):")
+    for idx in sorted(results):
+        print(f"  Layer {idx:2d}: {results[idx]:.4f}")
+
+    # --- Save plot ---
+    os.makedirs("plots", exist_ok=True)
+    plt.figure(figsize=(4, 2.5))
+    layers = list(sorted(results.keys()))
+    accuracies = [results[idx] for idx in layers]
+    plt.bar(layers, accuracies)
+    plt.xlabel("Layer index")
+    plt.ylabel("Probe accuracy")
+    plt.title(f"Probe accuracy by layer ({config.probe.state} state)")
+    plt.tight_layout()
+    plt.savefig(f"plots/probe_{config.probe.state}.png")
+    print(f"Saved plot to plots/probe_{config.probe.state}.png")
+
 
 if __name__ == "__main__":
     main()

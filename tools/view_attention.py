@@ -1,3 +1,6 @@
+import sys
+sys.path.append('./')
+
 from x_transformers import Encoder, TransformerWrapper
 import torch
 import numpy as np
