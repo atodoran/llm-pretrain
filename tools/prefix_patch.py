@@ -88,7 +88,6 @@ def prefix_patch(model, config: DictConfig):
     model.to(device)
     model.eval()
 
-    val_loader = get_loaders(config, which=("val",))
     seq_len    = config.data.seq_length
     n_layers   = config.model.depth
     prefixes   = list(range(seq_len + 1))
@@ -105,6 +104,7 @@ def prefix_patch(model, config: DictConfig):
     for li, L in enumerate(range(1, n_layers * 2, 2)):
         print(f"---- Layer {li + 1} ----")
         for pi, P in enumerate(prefixes):
+            val_loader = get_loaders(config, which=("val",))
             all_batch_nlds = []
 
             with torch.no_grad():
@@ -181,11 +181,10 @@ def prefix_patch(model, config: DictConfig):
     plt.tight_layout()
 
     # save plot
-    plot_name = config.model.pretrained
-    plot_name = plot_name.rsplit('/', 1)[-1]
-    plot_name = "prefix_patch_" + plot_name
-    plt.savefig(f"plots/{plot_name}.png")
-    print(f"plots/{plot_name}.png")
+    name = config.model.pretrained.rsplit('/', 1)[-1]
+    plot_path = f"plots/prefix_patch/{name}.png"
+    plt.savefig(plot_path)
+    print(f"Saved plot to {plot_path}")
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(config: DictConfig):
