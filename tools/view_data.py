@@ -6,19 +6,18 @@ import numpy as np
 import os
 
 from data import get_loaders
-from config import DataConfig, load_yml
+import hydra
+from omegaconf import DictConfig
 
-def main():
-    data_config_path = os.path.join('configs', 'data.yaml')
-    data_config = DataConfig.from_dict(kwargs=load_yml(data_config_path))
-    
-    np.random.seed(data_config.seed)
-    torch.manual_seed(data_config.seed)
-    torch.cuda.manual_seed(data_config.seed)
+@hydra.main(version_base=None, config_path="../configs", config_name="config")
+def main(config: DictConfig):
+    np.random.seed(config.data.seed)
+    torch.manual_seed(config.data.seed)
+    torch.cuda.manual_seed_all(config.data.seed)
 
-    data_config.n_train_samples, data_config.n_val_samples = 5, 5
-    data_config.batch_size = 5
-    _, loader_val = get_loaders(data_config)
+    config.data.n_val_samples = 5
+    config.train.batch_size = 5
+    loader_val = get_loaders(config, which=("val",))
 
     batch = next(iter(loader_val))
     X, Y = batch

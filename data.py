@@ -29,45 +29,50 @@ class ModularAddition(Dataset):
         return self.X[idx], self.Y[idx]
 
 
-class InContextRecall(Dataset):
-    def __init__(self, n_samples, seq_length, use_tqdm=True, num_keys=8, num_values=8):
-        assert seq_length % 2 == 0, "Sequence length must be even for in-context recall."
-        value_of_key = np.random.randint(0, num_values, size=(n_samples, num_keys), dtype=np.int32)
+import torch
+import numpy as np
+from torch.utils.data import Dataset
 
-        keys = np.random.randint(0, num_keys, size=(n_samples, seq_length // 2), dtype=np.int32)
-        values = np.empty((n_samples, seq_length // 2), dtype=np.int32)
-        use_tqdm = getattr(self, "tqdm", False)
-        iterator = tqdm.tqdm(range(n_samples), desc="Dataset, step 1/2") if use_tqdm else range(n_samples)
-        for i in iterator:
-            for j in range(seq_length // 2):
-                values[i, j] = value_of_key[i, keys[i, j]]
+class InContextRecall(Dataset):
+    def __init__(self, n_samples, seq_length, use_tqdm=True, key_vocab_size=120, value_vocab_size=120, num_keys=12):
+        assert seq_length % 2 == 0, "Sequence length must be even for in-context recall."
+        assert num_keys <= key_vocab_size, "num_keys must be less than or equal to key_vocab_size"
+
+        seq_pairs = seq_length // 2
+
+        sampled_keys = np.stack([
+            np.random.choice(key_vocab_size, size=num_keys, replace=False)
+            for i in range(n_samples)
+        ])
+
+        key_to_value = np.random.randint(0, value_vocab_size, size=(n_samples, num_keys), dtype=np.int32)
+        key_indices = np.random.randint(0, num_keys, size=(n_samples, seq_pairs), dtype=np.int32)
+        keys = np.take_along_axis(sampled_keys, key_indices, axis=1)
+        values = np.take_along_axis(key_to_value, key_indices, axis=1)
 
         values_masked = values.copy()
-        iterator = tqdm.tqdm(range(n_samples), desc="Dataset, step 2/2") if use_tqdm else range(n_samples)
-        for i in iterator:
-            seen_keys = set()
-            for j in range(seq_length // 2):
-                if keys[i, j] not in seen_keys:
+        for i in range(n_samples):
+            seen = set()
+            for j in range(seq_pairs):
+                k = keys[i, j]
+                if k not in seen:
                     values_masked[i, j] = -100
-                    seen_keys.add(keys[i, j])
+                    seen.add(k)
 
         kv_array = np.empty((n_samples, seq_length), dtype=np.int32)
         kv_array[:, 0::2] = keys
         kv_array[:, 1::2] = values
-        self.X = kv_array[:, :-1].copy()
 
-        kv_array_masked = np.empty((n_samples, seq_length), dtype=np.int32)
-        kv_array_masked[:, 0::2] = -100
+        kv_array_masked = np.full((n_samples, seq_length), fill_value=-100, dtype=np.int32)
         kv_array_masked[:, 1::2] = values_masked
-        self.Y = kv_array_masked[:, 1:]
 
+        self.X = torch.from_numpy(kv_array[:, :-1].copy()).long()
+        self.Y = torch.from_numpy(kv_array_masked[:, 1:].copy()).long()
         self.n_samples = n_samples
-        self.X = torch.from_numpy(self.X).long()
-        self.Y = torch.from_numpy(self.Y).long()
-    
+
     def __len__(self):
         return self.n_samples
-    
+
     def __getitem__(self, idx):
         return self.X[idx], self.Y[idx]
 
