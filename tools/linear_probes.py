@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 import hydra
 from omegaconf import DictConfig
 from functools import partial
+from prefix_patch import apply_block
 
 
 def default_identity_state(batch_inputs, batch_targets):
@@ -51,7 +52,9 @@ class StateExtractor:
         self.state_fn = state_fn
 
     def extract(self, inputs, targets):
-        return self.state_fn(inputs, targets)
+        states = self.state_fn(inputs, targets)
+        print(states)
+        return states
 
 
 class RepresentationExtractor:
@@ -64,20 +67,38 @@ class RepresentationExtractor:
 
     def extract(self, inputs: torch.Tensor) -> list:
         """
-        Performs a forward pass returning post-residual hidden states for each block.
+        Performs a forward pass, collecting post-residual hidden states for each block.
         Returns a list of length `depth`, each of shape (batch, seq_len, dim) as NumPy array.
         """
-        logits, intermediates = self.model(inputs, return_intermediates=True)
-        post_states = intermediates.layer_hiddens
-        assert len(post_states) == 2 * self.depth + 1
+        # Embedding logic
+        tok    = self.model.token_emb(inputs)
+        pos    = self.model.pos_emb(tok)
+        hidden = tok + pos
+        hidden = self.model.post_emb_norm(hidden)
+        hidden = self.model.emb_dropout(hidden)
+        hidden = self.model.project_emb(hidden)
 
-        res_stream = post_states[1::2]  # take only post-residual states
-        assert len(res_stream) == self.depth
-        
-        # print(logits.shape, res_stream[0].shape)
+        # Collect post-residual hidden states after each block
+        post_residual_states = []
+        for i, block_spec in enumerate(self.model.attn_layers.layers):
+            hidden = apply_block(block_spec, hidden)
+            post_residual_states.append(hidden.detach().cpu().numpy())
 
-        # convert to NumPy
-        return [h.detach().cpu().numpy() for h in res_stream]
+        return post_residual_states
+
+    # def extract(self, inputs: torch.Tensor) -> list:
+    #     """
+    #     Performs a forward pass returning post-residual hidden states for each block.
+    #     Returns a list of length `depth`, each of shape (batch, seq_len, dim) as NumPy array.
+    #     """
+    #     logits, intermediates = self.model(inputs, return_intermediates=True)
+    #     post_states = intermediates.layer_hiddens
+    #     assert len(post_states) == 2 * self.depth + 1
+
+    #     res_stream = post_states[1::2]  # take only post-residual states
+    #     assert len(res_stream) == self.depth
+
+    #     return [h.detach().cpu().numpy() for h in res_stream]
 
 
 class ProbeTrainer:
@@ -103,7 +124,7 @@ class ProbeTrainer:
         self.model.eval()
         all_states = []
         # initialize per-layer lists
-        activations = {i: [] for i in range(self.repr_ext.depth)}
+        activations = {i: [] for i in range(2 * self.repr_ext.depth)}
 
         with torch.no_grad():
             for batch in self.loader:
@@ -138,7 +159,7 @@ class ProbeTrainer:
         for idx, activation in reps.items():
             N, L, D = activation.shape
             X = activation.reshape(N * L, D)
-            clf = LogisticRegression(max_iter=1000, n_jobs=-1)
+            clf = LogisticRegression(max_iter=500, n_jobs=-1)
             clf.fit(X, flat_y)
             results[idx] = clf.score(X, flat_y)
         return results
