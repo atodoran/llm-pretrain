@@ -5,50 +5,29 @@ from x_transformers import Encoder, TransformerWrapper
 import torch
 import numpy as np
 import os
-import argparse
+import hydra
+from omegaconf import DictConfig
 import matplotlib.pyplot as plt
 
+from model import get_model
 from data import get_loaders
-from config import ModelConfig, DataConfig, load_yml
 
-def get_model(model_config):
-    attn_layers = Encoder(
-        depth=model_config.depth,
-        dim=model_config.dim,
-        heads=model_config.attn_heads,
-    )
-    model = TransformerWrapper(
-        attn_layers=attn_layers,
-        max_seq_len=model_config.max_seq_len,
-        num_tokens=model_config.vocab_size,
-    )
-    return model
+@hydra.main(version_base=None, config_path="../configs", config_name="config")
+def main(config: DictConfig):
+    np.random.seed(config.data.seed)
+    torch.manual_seed(config.data.seed)
+    torch.cuda.manual_seed_all(config.data.seed)
 
-def load_checkpoint(model, checkpoint_path):
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    return model
+    print("Building model...")
+    model = get_model(config)
 
-def main():
-    parser = argparse.ArgumentParser(description="View the attention maps of the model.")
-    parser.add_argument('--model-path', type=str, default=None, help='Path to the model checkpoint.')
-    args = parser.parse_args()
+    if config.model.pretrained:
+        path = os.path.join("models", f"{config.model.pretrained}.pth")
+        sd   = torch.load(path, map_location="cpu")["model_state_dict"]
+        model.load_state_dict(sd, strict=False)
 
-    data_config_path = os.path.join('configs', 'data.yaml')
-    model_config_path = os.path.join('configs', 'model.yaml')
-    data_config = DataConfig.from_dict(kwargs=load_yml(data_config_path))
-    model_config = ModelConfig.from_dict(kwargs=load_yml(model_config_path))
-
-    model = get_model(model_config)
-    model = load_checkpoint(model, args.model_path)
-    
-    np.random.seed(data_config.seed)
-    torch.manual_seed(data_config.seed)
-    torch.cuda.manual_seed(data_config.seed)
-
-    data_config.batch_size = 1
-    _, loader_val = get_loaders(data_config)
+    config.data.n_val_samples = 1
+    loader_val = get_loaders(config, which=("val",))
 
     batch = next(iter(loader_val))
     inputs, targets = batch

@@ -24,7 +24,7 @@ normalize_rows = False
 annotate = True
 
 def save_heatmap(matrix, title, xlabel, ylabel, xticks, yticks, filename,
-                 cmap='viridis'):
+                 cmap='viridis', logarithmic=False):
     data = matrix.copy()
 
     if normalize_rows:
@@ -32,6 +32,8 @@ def save_heatmap(matrix, title, xlabel, ylabel, xticks, yticks, filename,
         row_max = np.nanmax(data, axis=1, keepdims=True)
         with np.errstate(invalid='ignore', divide='ignore'):
             data = (data - row_min) / (row_max - row_min + 1e-9)
+    elif logarithmic:
+        data = 1 - data.shape[1] / data
 
     fig, ax = plt.subplots(figsize=(20, 6))
     cax = ax.imshow(data, aspect='auto', cmap=cmap, interpolation='nearest')
@@ -86,7 +88,7 @@ def plot_nld_for_query(nld_table, key_points, Q):
 
 def plot_past_influence_count(nld_table, threshold=0.9):
     mask = mask_future_keys(nld_table, threshold)
-    count_map = np.sum(mask, axis=2)  # shape: (L, Q)
+    count_map = np.sum(mask, axis=2) + 1  # shape: (L, Q)
     layers = [f"L{l+1}" for l in range(nld_table.shape[0])]
     queries = [f"Q{q+1}" for q in range(nld_table.shape[1])]
 
@@ -97,7 +99,8 @@ def plot_past_influence_count(nld_table, threshold=0.9):
                  xticks=queries,
                  yticks=layers,
                  filename=f"super_plot.png",
-                 cmap='Blues')
+                 cmap='Blues',
+                 logarithmic=True)
 
 def plot_mean_past_nld(nld_table):
     L, Q, K = nld_table.shape
