@@ -83,7 +83,7 @@ def run_from_layer(model, hidden: torch.Tensor, layer_idx: int) -> torch.Tensor:
 
     return model.to_logits(hidden)
 
-def prefix_patch(model, config: DictConfig):
+def prefix_patch(model, config: DictConfig, name):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
@@ -181,7 +181,6 @@ def prefix_patch(model, config: DictConfig):
     plt.tight_layout()
 
     # save plot
-    name = config.model.pretrained.rsplit('/', 1)[-1]
     plot_path = f"plots/prefix_patch/{name}.png"
     plt.savefig(plot_path)
     print(f"Saved plot to {plot_path}")
@@ -195,12 +194,15 @@ def main(config: DictConfig):
     print("Building model...")
     model = get_model(config)
 
-    if config.model.pretrained:
-        path = os.path.join("models", f"{config.model.pretrained}.pth")
-        sd   = torch.load(path, map_location="cpu")["model_state_dict"]
-        model.load_state_dict(sd, strict=False)
+    if config.model.pretrained is None:
+        raise ValueError("Pretrained model path must be specified in the config.")
 
-    prefix_patch(model, config)
+    path = os.path.join("models", f"{config.model.pretrained}.pth")
+    sd   = torch.load(path, map_location="cpu")["model_state_dict"]
+    model.load_state_dict(sd, strict=False)
+    name = config.model.pretrained.rsplit('/', 1)[-1]
+
+    prefix_patch(model, config, name)
 
 if __name__ == "__main__":
     main()

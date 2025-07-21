@@ -1,5 +1,4 @@
-def get_run_name_base(config, num_params):
-    def params_str(num):
+def params_str(num):
         if num >= 1e9:
             return f"{num/1e9:.0f}B"
         elif num >= 1e6:
@@ -9,6 +8,7 @@ def get_run_name_base(config, num_params):
         else:
             return str(num)
 
+def get_run_name_base(config, num_params):
     name = (
         f"{config.task.name}_"
         f"{params_str(num_params)}_"

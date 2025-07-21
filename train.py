@@ -17,6 +17,7 @@ import signal
 from model import get_model
 from data import get_loaders
 from utils import get_run_name_base
+from tools.prefix_patch import prefix_patch
 
 def cleanup(signum, frame):
     wandb.finish()
@@ -28,11 +29,12 @@ except NameError:
     def profile(func): return func
 
 
-def save_checkpoint(model, optimizer, epoch, path, wandb_id):
+def save_checkpoint(model, optimizer, epoch, best_val_acc, path, wandb_id):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(
         {
             "epoch": epoch,
+            "best_val_acc": best_val_acc,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "wandb_id": wandb_id,
@@ -45,9 +47,10 @@ def load_checkpoint(model, optimizer, path, device):
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    epoch = ckpt["epoch"]
+    epoch = ckpt.get("epoch", 0)
+    best_val_acc = ckpt.get("best_val_acc", 0)
     wandb_id = ckpt.get("wandb_id")
-    return epoch, wandb_id
+    return epoch, best_val_acc, wandb_id
 
 
 def get_latest_checkpoint(run_name_prefix):
@@ -106,10 +109,10 @@ def train(
 
     save_path = os.path.join("models", f"{run_name}.pth")
     
-    start_epoch, run_id = 0, None
+    start_epoch, best_val_acc, run_id = 0, 0, None
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Resuming from checkpoint: {checkpoint_path}")
-        start_epoch, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
+        start_epoch, best_val_acc, run_id = load_checkpoint(model, optimizer, checkpoint_path, device)
         print(f"Resumed from epoch {start_epoch}")
 
     if config.train.wandb:
@@ -145,7 +148,6 @@ def train(
     train_loader, val_loader = get_loaders(config)
 
     print("Starting training...")
-    best_val_loss = float('inf')
     for epoch in range(start_epoch, epochs):
         print(f"\nEpoch {epoch + 1}/{epochs}")
 
@@ -218,14 +220,24 @@ def train(
             })
 
         if checkpoint_path:
-            save_checkpoint(model, optimizer, epoch + 1, checkpoint_path, run_id)
+            save_checkpoint(model, optimizer, epoch + 1, best_val_acc, checkpoint_path, run_id)
 
-        if save_path and val_loss < best_val_loss:
-            best_val_loss = val_loss
-            save_checkpoint(model, optimizer, epoch + 1, save_path, run_id)
+        if save_path and val_acc > best_val_acc:
+            best_val_acc = val_acc
+            save_checkpoint(model, optimizer, epoch + 1, best_val_acc, save_path, run_id)
+        
+        if config.train.prefix_patch_epochs is not None and (epoch + 1) % config.train.prefix_patch_epochs == 0:
+            print("Running prefix patch...")
+            name = run_name + "_" + str(epoch + 1)
+            prefix_patch(model, config, name)
+            model.train()
         
         gc.collect()
         torch.cuda.empty_cache()
+    
+    print("Running prefix patch...")
+    name = run_name + "_" + str(epochs)
+    prefix_patch(model, config, name)
 
     if config.train.wandb:
         wandb.finish()
